@@ -2,7 +2,7 @@
 
 **Teensy 4.1 tri-CAN OBD interface for VAG — diagnostic + comfort bus from one plug.**
 
-> 🚧 **Work in progress.** The Head 1 firmware is written but **not yet hardware-tested**, and Heads 2 & 3 are stubs. This is an early scaffold — expect rough edges, and don't trust it against a car you can't recover.
+> 🚧 **Work in progress.** Firmware implements Head 1 (read **and** write UDS) and Head 2 (sniff), but is **not yet hardware-tested**. Head 3 (CAN-FD) is a stub. Expect rough edges — don't trust it against a car you can't recover.
 
 Cerberus turns a Teensy 4.1 (NXP i.MX RT1062) into a multi-bus VW/Audi OBD tool.
 Three CAN heads, one OBD connector — read diagnostics on the powertrain bus *and*
@@ -15,18 +15,20 @@ sniff the convenience bus (where Component Protection lives) at the same time.
 
 | Head | Bus | OBD pins | Rate | Transceiver | Status |
 |------|-----|----------|------|-------------|--------|
-| **1** | Powertrain / Diagnostic | **6 / 14** | 500 kbps | high-speed (ISO 11898-2) | ✅ MVP |
-| **2** | Comfort / Convenience | **3 / 11** | 100 kbps | **fault-tolerant** (ISO 11898-3) | 🔧 stub |
-| **3** | spare (CAN-FD) | — | — | — | 🔧 stub |
+| **1** | Powertrain / Diagnostic | **6 / 14** | 500 kbps | high-speed — `SN65HVD230` | ✅ read + write |
+| **2** | Comfort / Convenience | **3 / 11** | 100 kbps | HS *or* FT — measure (see below) | ⚙️ sniff + UDS |
+| **3** | spare (CAN-FD) | **30 / 31** | — | FD-rated (**not** `SN65HVD230`) | 🔧 stub |
 
 Head 1 alone does the whole UDS job: the gateway (J533) routes diagnostic
 requests to every module, so one 500 kbps bus reaches J533 / J255 / J136 / J285.
 Head 2 taps the convenience bus directly to watch the J533 ↔ J255 CP handshake.
 
-> ⚠️ **Transceiver warning:** Head 2's 100 kbps VAG comfort bus is **low-speed
-> fault-tolerant CAN** — a *different physical layer*. It needs an FT transceiver
-> (`TJA1054A` / `AU5790`), **not** a high-speed one. A high-speed transceiver on
-> pins 3/11 will sit deaf. See [docs/HARDWARE.md](docs/HARDWARE.md).
+> ⚠️ **Head 2's transceiver depends on the bus.** VAG's 100 kbps comfort bus is
+> *sometimes* **low-speed fault-tolerant CAN** (ISO 11898-3) — a different physical
+> layer. Measure idle volts on OBD 3/11: **both ≈ 2.5 V** → high-speed, a second
+> `SN65HVD230` works; **split (≈0 V / ≈5 V)** → fault-tolerant, use a `TJA1055T/3`
+> (FT, 3.3 V VIO) instead. It's a *voltage-levels* thing, not a bit-rate thing.
+> See [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Quick start
 
@@ -34,8 +36,9 @@ Head 2 taps the convenience bus directly to watch the J533 ↔ J255 CP handshake
 # build + flash (PlatformIO)
 pio run -t upload
 
-# wire Head 1: OBD pin 6 -> CANH, pin 14 -> CANL, pin 4 -> GND, through a
-# high-speed CAN transceiver on Teensy pins 22(TX)/23(RX). Power Teensy from USB.
+# wire Head 1 through a 3.3 V SN65HVD230: OBD 6 -> CANH, 14 -> CANL, 4 -> GND;
+# board CTX -> Teensy 22, CRX -> Teensy 23, VCC -> 3V3, GND -> GND. USB powers it.
+# (disable the board's on-board 120 Ohm -- the car's bus is already terminated.)
 
 # run the cross-module IKA read over USB
 pip install pyserial
@@ -44,21 +47,30 @@ python host/cerberus_probe.py COM5
 
 ## Host protocol (USB serial, 115200)
 
-ASCII, one request per line — Cerberus does the ISO-TP framing:
+ASCII, one command per line — Cerberus does all the ISO-TP framing:
 
 ```
-TXID:RXID:REQHEX          e.g.  710:77A:2200BE
--> OK:6200BE<34 bytes>    or    ERR:timeout
+<TXID>:<RXID>:<HEX>             UDS on Head 1        710:77A:2200BE
+UDS:<bus>:<TXID>:<RXID>:<HEX>   UDS on bus 1|2       UDS:1:710:77A:2E00BE…
+SNIFF:<bus>:<ms>                passive dump (ms=0 = until a serial byte)
+INFO                            firmware + bus config
+PING                            -> PONG
+
+-> OK:<resphex> | ERR:<reason> | RX:<ms>:<id>:<data> … DONE:<n>
 ```
 
-Single- and multi-frame ISO-TP, flow control, and `0x78` response-pending are
-handled on the Teensy. The PC just sends UDS payloads (e.g. `1003` then `2200BE`).
+Single/multi-frame ISO-TP, flow control, block-size / STmin, and `0x78`
+response-pending are handled on the Teensy. **Writes need no special command** — a
+payload over 7 bytes (e.g. `2E00BE` + 34 = 37) is auto First-Frame/Consecutive-Frame
+framed. The PC just sends UDS payloads: `1003`, then `2200BE` to read or `2E00BE…` to write.
 
 ## Roadmap
 
-- [x] Head 1 @ 500k — ISO-TP / UDS bridge (runs Experiment 1, the `0x00BE` read)
-- [ ] Head 2 @ 100k FT — convenience-bus sniffer (CP challenge/response capture)
-- [ ] Head 3 — CAN-FD (MQB-Evo / MLB-Evo)
+- [x] Head 1 @ 500k — ISO-TP / UDS bridge, **read + write** (runs Experiment 1, the `0x00BE` read)
+- [x] Multi-frame ISO-TP TX — IKA / constellation writes (`2E00BE`, `2E04A3`)
+- [x] Head 2 @ 100k — convenience-bus **sniffer** (`SNIFF:2:<ms>`) for CP handshake capture
+- [ ] Hardware listen-only (truly silent sniff at an unknown baud)
+- [ ] Head 3 — CAN-FD (MQB-Evo / MLB-Evo), FD-rated transceiver on pins 30/31
 - [ ] Converge the host protocol with `esp32-isotp-ble-bridge-c7vag` so
       Simos-Suite's transport layer drives Cerberus unchanged
 

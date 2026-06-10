@@ -6,8 +6,8 @@
 |---|---|---|---|
 | 6  | CAN-H powertrain/diag (500k) | 1 | **HS** transceiver CANH |
 | 14 | CAN-L powertrain/diag        | 1 | **HS** transceiver CANL |
-| 3  | CAN-H comfort/convenience (100k) | 2 | **FT** transceiver CANH |
-| 11 | CAN-L comfort/convenience        | 2 | **FT** transceiver CANL |
+| 3  | CAN-H comfort/convenience (100k) | 2 | Head-2 xcvr CANH (HS *or* FT — measure) |
+| 11 | CAN-L comfort/convenience        | 2 | Head-2 xcvr CANL (HS *or* FT — measure) |
 | 4  | chassis ground | — | common GND |
 | 16 | +12 V (always hot) | — | *optional* power-in (regulate to 5 V) |
 
@@ -26,19 +26,44 @@ from the car. No pin 16 needed unless you want it standalone.
 | 2 | CAN2 | 1  | 0  | classic CAN 2.0B @ 100k |
 | 3 | CAN3 | 31 | 30 | CAN-FD capable |
 
+## Power
+
+Both transceiver boards are **3.3 V** `SN65HVD230`s — they run straight off the
+Teensy's **3V3** pin (board VCC → 3V3, board GND → GND). No 5 V, no level shifting,
+no VIO. Power the whole rig from the laptop's **USB**; the Teensy's regulator feeds
+both boards (~20 mA total). Only reach for OBD pin 16 (+12 V → a 5 V buck → Teensy
+VIN) if you want it standalone with no laptop — and then **cut the Teensy's VUSB/VIN
+pad** so USB-data and the buck don't both push 5 V onto VIN.
+
+## Wiring direction (the #1 gotcha)
+
+Board **CTX → Teensy CAN-TX** (22 / 1), board **CRX → Teensy CAN-RX** (23 / 0) —
+straight through, *not* crossed (the transceiver is a level converter, not a UART
+peer). If you get no comms, swap CTX/CRX — some clone boards mislabel them.
+
 ## Transceivers — do NOT mix these up
 
-- **Head 1 (diagnostic, 500k):** high-speed CAN, ISO 11898-2 —
-  `SN65HVD230` (3.3 V), `TJA1051`, `MCP2562`.
-- **Head 2 (comfort, 100k):** **low-speed fault-tolerant** CAN, ISO 11898-3 —
-  `TJA1054A`, `AU5790`, `PCA82C252`. A high-speed transceiver will **not** talk
-  on this bus.
+- **Head 1 (diagnostic, 500k):** high-speed CAN (ISO 11898-2). A 3.3 V `SN65HVD230`
+  is the simplest — it talks to the Teensy directly. (`TJA1051T/3` or `MCP2562` also
+  work, but those are 5 V parts that need their 3.3 V VIO pin tied to 3V3.)
+- **Head 2 (comfort, 100k):** depends on the bus — **measure first** (below). If it's
+  high-speed at 100k, a second `SN65HVD230`. If it's **low-speed fault-tolerant**
+  (ISO 11898-3), a `TJA1055T/3` (FT, with a 3.3 V VIO pin) — *not* the older 5 V-logic
+  `TJA1054A` / `AU5790`, whose 5 V RXD would over-volt the (non-5 V-tolerant) Teensy.
+- **Head 3 (CAN-FD, pins 30/31):** needs an **FD-rated** transceiver (TI `TCAN33x` /
+  `SN65HVD25x` family for 3.3 V). The `SN65HVD230` is a 1 Mbps *classic* part and is
+  out of spec at FD data rates — do **not** use it here. Only MQB-Evo / MLB-Evo cars
+  use CAN-FD; classic-CAN cars (e.g. C7) never touch this head.
 
 ### Verify Head 2's physical layer before buying its transceiver
 
 Back-probe OBD pins 3/11 vs. ground with the car awake:
-- both ≈ **2.5 V** at idle  → high-speed (use a normal transceiver)
-- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant (use the FT part)
+- both ≈ **2.5 V** at idle  → high-speed (a second `SN65HVD230` works)
+- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant (use a `TJA1055T/3`)
 
-The vehicle buses are already terminated (120 Ω HS / split-termination FT) — don't
-add your own termination when only tapping/sniffing.
+### Termination
+
+The vehicle buses are already terminated (~60 Ω). The Waveshare `SN65HVD230` boards
+carry their own **120 Ω** terminator — **disable/desolder it** (or its jumper) before
+tapping, or you over-terminate the bus (3 × 120 Ω ≈ 40 Ω → errors). Add none of your
+own when only tapping/sniffing.
