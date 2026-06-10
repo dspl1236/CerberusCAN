@@ -1,0 +1,9 @@
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+*.hex
+*.elf
+*.bin
+__pycache__/
+*.pyc
