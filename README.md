@@ -16,19 +16,18 @@ sniff the convenience bus (where Component Protection lives) at the same time.
 | Head | Bus | OBD pins | Rate | Transceiver | Status |
 |------|-----|----------|------|-------------|--------|
 | **1** | Powertrain / Diagnostic | **6 / 14** | 500 kbps | high-speed — `SN65HVD230` | ✅ read + write |
-| **2** | Comfort / Convenience | **3 / 11** | 100 kbps | HS *or* FT — measure (see below) | ⚙️ sniff + UDS |
+| **2** | Comfort / Convenience | **3 / 11** | 100 kbps | high-speed — `SN65HVD230` | ⚙️ sniff + UDS |
 | **3** | spare (CAN-FD) | **30 / 31** | — | FD-rated (**not** `SN65HVD230`) | 🔧 stub |
 
 Head 1 alone does the whole UDS job: the gateway (J533) routes diagnostic
 requests to every module, so one 500 kbps bus reaches J533 / J255 / J136 / J285.
 Head 2 taps the convenience bus directly to watch the J533 ↔ J255 CP handshake.
 
-> ⚠️ **Head 2's transceiver depends on the bus.** VAG's 100 kbps comfort bus is
-> *sometimes* **low-speed fault-tolerant CAN** (ISO 11898-3) — a different physical
-> layer. Measure idle volts on OBD 3/11: **both ≈ 2.5 V** → high-speed, a second
-> `SN65HVD230` works; **split (≈0 V / ≈5 V)** → fault-tolerant, use a `TJA1055T/3`
-> (FT, 3.3 V VIO) instead. It's a *voltage-levels* thing, not a bit-rate thing.
-> See [docs/HARDWARE.md](docs/HARDWARE.md).
+> **Both heads use a 3.3 V `SN65HVD230`.** Head 2 assumes the comfort bus runs
+> *high-speed* CAN at 100 kbps. If Head 2 sniffs nothing, that bus is **low-speed
+> fault-tolerant** (ISO 11898-3) — a different physical layer the HVD230 can't
+> decode — and *that head alone* would need an FT transceiver (`TJA1055T/3`). It's a
+> *voltage-levels* thing, not a bit-rate thing. See [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Quick start
 

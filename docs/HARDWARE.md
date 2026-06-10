@@ -6,8 +6,8 @@
 |---|---|---|---|
 | 6  | CAN-H powertrain/diag (500k) | 1 | **HS** transceiver CANH |
 | 14 | CAN-L powertrain/diag        | 1 | **HS** transceiver CANL |
-| 3  | CAN-H comfort/convenience (100k) | 2 | Head-2 xcvr CANH (HS *or* FT — measure) |
-| 11 | CAN-L comfort/convenience        | 2 | Head-2 xcvr CANL (HS *or* FT — measure) |
+| 3  | CAN-H comfort/convenience (100k) | 2 | **HS** transceiver CANH (SN65HVD230) |
+| 11 | CAN-L comfort/convenience        | 2 | **HS** transceiver CANL (SN65HVD230) |
 | 4  | chassis ground | — | common GND |
 | 16 | +12 V (always hot) | — | *optional* power-in (regulate to 5 V) |
 
@@ -46,20 +46,21 @@ peer). If you get no comms, swap CTX/CRX — some clone boards mislabel them.
 - **Head 1 (diagnostic, 500k):** high-speed CAN (ISO 11898-2). A 3.3 V `SN65HVD230`
   is the simplest — it talks to the Teensy directly. (`TJA1051T/3` or `MCP2562` also
   work, but those are 5 V parts that need their 3.3 V VIO pin tied to 3V3.)
-- **Head 2 (comfort, 100k):** depends on the bus — **measure first** (below). If it's
-  high-speed at 100k, a second `SN65HVD230`. If it's **low-speed fault-tolerant**
-  (ISO 11898-3), a `TJA1055T/3` (FT, with a 3.3 V VIO pin) — *not* the older 5 V-logic
-  `TJA1054A` / `AU5790`, whose 5 V RXD would over-volt the (non-5 V-tolerant) Teensy.
+- **Head 2 (comfort, 100k):** a second `SN65HVD230`, same as Head 1. This assumes the
+  comfort bus runs **high-speed** CAN at 100k. If Head 2 captures nothing, that bus is
+  **low-speed fault-tolerant** (ISO 11898-3) — a physical layer the HVD230 can't read —
+  and *that head* would need an FT part (`TJA1055T/3`, FT with a 3.3 V VIO pin; **not**
+  the 5 V-logic `TJA1054A` / `AU5790`, whose 5 V RXD would over-volt the Teensy).
 - **Head 3 (CAN-FD, pins 30/31):** needs an **FD-rated** transceiver (TI `TCAN33x` /
   `SN65HVD25x` family for 3.3 V). The `SN65HVD230` is a 1 Mbps *classic* part and is
   out of spec at FD data rates — do **not** use it here. Only MQB-Evo / MLB-Evo cars
   use CAN-FD; classic-CAN cars (e.g. C7) never touch this head.
 
-### Verify Head 2's physical layer before buying its transceiver
+### If Head 2 sniffs nothing — check the physical layer
 
 Back-probe OBD pins 3/11 vs. ground with the car awake:
-- both ≈ **2.5 V** at idle  → high-speed (a second `SN65HVD230` works)
-- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant (use a `TJA1055T/3`)
+- both ≈ **2.5 V** at idle  → high-speed (the `SN65HVD230` is correct)
+- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant (swap that head to a `TJA1055T/3`)
 
 ### Termination
 

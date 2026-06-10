@@ -4,12 +4,12 @@
 #define CERBERUS_VERSION "0.2.0-wip"
 
 // ---- Bus baud rates ----
-#define BUS1_BAUD   500000   // Head 1: Powertrain/Diagnostic CAN (OBD 6/14) — HS, SN65HVD230 OK
-#define BUS2_BAUD   100000   // Head 2: Comfort/Convenience CAN   (OBD 3/11) — see note
-// Head 2's physical layer is bus-dependent: if the comfort bus is HIGH-SPEED at
-// 100k, a second SN65HVD230 works; if LOW-SPEED FAULT-TOLERANT (ISO 11898-3), use
-// a TJA1055T/3 instead. Tell them apart by idle volts on OBD 3/11 (both ~2.5 V = HS;
-// split ~0 V / ~5 V = FT).
+#define BUS1_BAUD   500000   // Head 1: Powertrain/Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
+#define BUS2_BAUD   100000   // Head 2: Comfort/Convenience CAN   (OBD 3/11) — HS, SN65HVD230
+// Both heads use a 3.3 V SN65HVD230. Head 2 assumes the comfort bus is HIGH-SPEED at
+// 100k; if it sniffs nothing the bus is LOW-SPEED FAULT-TOLERANT (ISO 11898-3) — the
+// HVD230 can't read it and that head needs an FT part (TJA1055T/3). Confirm via idle
+// volts on OBD 3/11 (both ~2.5 V = HS; split ~0 V / ~5 V = FT).
 // Head 3: CAN-FD (CAN3, pins 30/31) needs an FD-rated transceiver, NOT the SN65HVD230.
 
 // ---- ISO-TP ----
