@@ -63,6 +63,12 @@ response-pending are handled on the Teensy. **Writes need no special command** �
 payload over 7 bytes (e.g. `2E00BE` + 34 = 37) is auto First-Frame/Consecutive-Frame
 framed. The PC just sends UDS payloads: `1003`, then `2200BE` to read or `2E00BE…` to write.
 
+## Host scripts (`host/`)
+
+- `cerberus_probe.py` — Experiment 1: reads `0x00BE` across J533/J255/J136/J285 and prints the VIN-bound vs. module-bound verdict
+- `cerberus_sniff.py` — passive `SNIFF` capture of a bus, live dump + per-ID summary (the CP handshake on Head 2); 0 frames on the comfort bus = it's fault-tolerant
+- `cerberus_write.py` — careful **generic** UDS write: read-before → confirm → `2E` → read-back verify, with `--dry-run`
+
 ## Roadmap
 
 - [x] Head 1 @ 500k — ISO-TP / UDS bridge, **read + write** (runs Experiment 1, the `0x00BE` read)
