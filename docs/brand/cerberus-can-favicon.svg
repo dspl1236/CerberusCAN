@@ -1,0 +1,25 @@
+<svg width="680" height="680" viewBox="0 0 680 680" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>CerberusCAN favicon mark</title>
+<desc>Three angular crimson dog heads with amber eyes enclosed in a crimson hexagon outline, simplified for favicon sizes with no wire detail.</desc>
+<polygon points="340,100 548,220 548,460 340,580 132,460 132,220" fill="none" stroke="#B5252C" stroke-width="12" stroke-linejoin="round"/>
+<g transform="translate(51,180.6) scale(0.85)">
+<g fill="#B5252C">
+<path d="M118,196 L150,168 L180,150 L190,148 L198,108 L222,142 L248,158 L262,210 L180,228 L150,212 L118,204 Z"/>
+<g transform="translate(680,0) scale(-1,1)">
+<path d="M118,196 L150,168 L180,150 L190,148 L198,108 L222,142 L248,158 L262,210 L180,228 L150,212 L118,204 Z"/>
+</g>
+<polygon points="295,140 310,95 330,135"/>
+<polygon points="385,140 370,95 350,135"/>
+<path d="M293,138 L387,138 L395,180 L358,232 L340,242 L322,232 L285,180 Z"/>
+<polygon points="200,225 480,225 380,280 300,280"/>
+</g>
+<g fill="#F3B229">
+<polygon points="182,168 200,164 198,174"/>
+<g transform="translate(680,0) scale(-1,1)">
+<polygon points="182,168 200,164 198,174"/>
+</g>
+<polygon points="313,172 332,166 332,176 316,180"/>
+<polygon points="367,172 348,166 348,176 364,180"/>
+</g>
+</g>
+</svg>

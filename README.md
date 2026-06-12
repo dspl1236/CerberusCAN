@@ -1,6 +1,13 @@
-# Cerberus 🐕‍🦺
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/cerberus-can-logo-dark.png">
+    <img alt="CerberusCAN — Teensy 4.1 tri-CAN OBD interface for VAG" src="docs/brand/cerberus-can-logo-light.png" width="460">
+  </picture>
+</p>
 
-**Teensy 4.1 tri-CAN OBD interface for VAG — diagnostic + comfort bus from one plug.**
+<p align="center">
+  <strong>Teensy 4.1 tri-CAN OBD interface for VAG — diagnostic + comfort bus from one plug.</strong>
+</p>
 
 > 🚧 **Work in progress.** Firmware implements Head 1 (read **and** write UDS) and Head 2 (sniff), but is **not yet hardware-tested**. Head 3 (CAN-FD) is a stub. Expect rough edges — don't trust it against a car you can't recover.
 
