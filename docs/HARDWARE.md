@@ -63,11 +63,16 @@ exact symptom set? Swap the data pair first — it costs 30 seconds.
   out of spec at FD data rates — do **not** use it here. Only MQB-Evo / MLB-Evo cars
   use CAN-FD; classic-CAN cars (e.g. C7) never touch this head.
 
-### If Head 2 sniffs nothing — check the physical layer
+### Head 2 / OBD 3/11 is car-dependent — meter it first
 
-Back-probe OBD pins 3/11 vs. ground with the car awake:
-- both ≈ **2.5 V** at idle  → high-speed (the `SN65HVD230` is correct)
-- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant (swap that head to a `TJA1055T/3`)
+Pins 3/11 are OEM-discretion. *Some* VAG/Porsche models route a second CAN there;
+**many gateway cars (incl. the C7 A6) firewall the OBD port to the diagnostic CAN only**
+— on those, 3/11 is dead ([Ross-Tech](https://forums.ross-tech.com/index.php?threads/18385/):
+the OBD CAN is "a dedicated diagnostic bus … separated from the car's internal CAN buses
+by gateway"). Back-probe OBD 3/11 vs. ground, car awake:
+- both ≈ **2.5 V** → high-speed CAN present → Head 2 works (`SN65HVD230` is correct)
+- **split** (one ≈ 0 V, one ≈ 5 V) → low-speed fault-tolerant → swap that head to a `TJA1055T/3`
+- **~0 V / floating** → no bus on 3/11 (gateway-firewalled) → tap an *internal* bus for the comfort/CP handshake, not the OBD port
 
 ### Termination
 

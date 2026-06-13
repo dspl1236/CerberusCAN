@@ -28,13 +28,17 @@ sniff the convenience bus (where Component Protection lives) at the same time.
 
 Head 1 alone does the whole UDS job: the gateway (J533) routes diagnostic
 requests to every module, so one 500 kbps bus reaches J533 / J255 / J136 / J285.
-Head 2 taps the convenience bus directly to watch the J533 ↔ J255 CP handshake.
+Head 2 taps a **second CAN on OBD 3/11** — *where the car exposes one* — e.g. to watch the J533 ↔ J255 CP handshake directly.
 
-> **Both heads use a 3.3 V `SN65HVD230`.** Head 2 assumes the comfort bus runs
-> *high-speed* CAN at 100 kbps. If Head 2 sniffs nothing, that bus is **low-speed
-> fault-tolerant** (ISO 11898-3) — a different physical layer the HVD230 can't
-> decode — and *that head alone* would need an FT transceiver (`TJA1055T/3`). It's a
-> *voltage-levels* thing, not a bit-rate thing. See [docs/HARDWARE.md](docs/HARDWARE.md).
+> **Heads use a 3.3 V `SN65HVD230`.** ⚠️ **Head 2 is car-dependent.** OBD pins 3/11 are
+> OEM-discretion — *some* VAG/Porsche models route a second CAN there, but **many
+> gateway cars (incl. the C7 A6) firewall the OBD port to the diagnostic CAN only**, so
+> 3/11 is dead and Head 2 reads nothing ([Ross-Tech](https://forums.ross-tech.com/index.php?threads/18385/):
+> the OBD CAN is "a dedicated diagnostic bus … separated from the car's internal CAN
+> buses by gateway"). **Meter 3/11 first** (car on): both ≈ 2.5 V → high-speed, Head 2
+> works; split ≈ 0/5 V → low-speed fault-tolerant, needs a `TJA1055T/3`; ~0 V/floating →
+> no bus there (tap an *internal* bus for the comfort/CP handshake). See
+> [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Quick start
 

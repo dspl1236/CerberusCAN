@@ -4,10 +4,11 @@ A real `SCAN` + identify run from CerberusCAN on a 2013 Audi A6 C7, to show what
 tool finds on a VAG car.
 
 **Every module is reached on Head 1** (the diagnostic bus, OBD 6/14): the J533 gateway
-routes *all* UDS to the OBD diagnostic CAN, so one head maps the whole car. Head 2 (the
-comfort-bus tap on OBD 3/11) is passive and saw no traffic on this car — the 100 kbps
-comfort bus is almost certainly **low-speed fault-tolerant**, which a high-speed
-SN65HVD230 can't decode (see [HARDWARE.md](HARDWARE.md)).
+routes *all* UDS to the OBD diagnostic CAN, so one head maps the whole car. Head 2 (OBD
+3/11) saw no traffic on this car — and it's *architecture*, not FT or wiring: the gateway
+**firewalls the OBD port to the diagnostic CAN only** ([Ross-Tech](https://forums.ross-tech.com/index.php?threads/18385/)),
+so there's no comfort bus on 3/11 to tap. (Pins 3/11 are OEM-discretion — *other* models
+do route a second CAN there; this C7 doesn't. See [HARDWARE.md](HARDWARE.md).)
 
 Discovered with `SCAN:1`, then identified by reading `F187` (part number) and `F19E`
 (ASAM ODX name) from each module.
