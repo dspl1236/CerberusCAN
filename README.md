@@ -9,7 +9,7 @@
   <strong>Teensy 4.1 tri-CAN OBD interface for VAG — diagnostic + comfort bus from one plug.</strong>
 </p>
 
-> 🚧 **Work in progress.** Firmware implements Head 1 (read **and** write UDS) and Head 2 (sniff), but is **not yet hardware-tested**. Head 3 (CAN-FD) is a stub. Expect rough edges — don't trust it against a car you can't recover.
+> 🚧 **Alpha — but hardware-validated.** Head 1 (diagnostic) is confirmed on a real **2013 Audi A6 C7**: it reads live module data (VIN, part numbers, the J533 CP constellation) over the gateway via multi-frame ISO-TP. Head 2 (comfort) and the UDS **write** path are still experimental; Head 3 (CAN-FD) is a stub. Don't point the write features at a car you can't recover.
 
 Cerberus turns a Teensy 4.1 (NXP i.MX RT1062) into a multi-bus VW/Audi OBD tool.
 Three CAN heads, one OBD connector — read diagnostics on the powertrain bus *and*
@@ -38,17 +38,25 @@ Head 2 taps the convenience bus directly to watch the J533 ↔ J255 CP handshake
 
 ## Quick start
 
+**Building one?** Full guide — BOM, wiring, flashing, bring-up, and the gotchas — in
+**[docs/BUILD.md](docs/BUILD.md)**.
+
+**Flash** — two ways:
 ```bash
-# build + flash (PlatformIO)
-pio run -t upload
+# A) no toolchain: open firmware/cerberus-can-v0.2.0-teensy41.hex in Teensy Loader
+# B) from source (PlatformIO):
+pip install platformio
+python -m platformio run -t upload
+```
 
-# wire Head 1 through a 3.3 V SN65HVD230: OBD 6 -> CANH, 14 -> CANL, 4 -> GND;
-# board CTX -> Teensy 22, CRX -> Teensy 23, VCC -> 3V3, GND -> GND. USB powers it.
-# (disable the board's on-board 120 Ohm -- the car's bus is already terminated.)
+**Wire Head 1** through a 3.3 V SN65HVD230: OBD 6→CANH, 14→CANL, 4→GND; board
+CTX→Teensy 22, CRX→Teensy 23, VCC→3V3, GND→GND. USB powers it. Desolder the board's
+120 Ω terminator. *(Clone boards mislabel CTX/CRX — if no comms, swap 22↔23.)*
 
-# run the cross-module IKA read over USB
+**Smoke-test, then read** (your COM number varies):
+```bash
 pip install pyserial
-python host/cerberus_probe.py COM5
+python host/cerberus_probe.py COM12
 ```
 
 ## Host protocol (USB serial, 115200)

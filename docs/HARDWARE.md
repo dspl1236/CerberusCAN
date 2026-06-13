@@ -35,11 +35,18 @@ both boards (~20 mA total). Only reach for OBD pin 16 (+12 V → a 5 V buck → 
 VIN) if you want it standalone with no laptop — and then **cut the Teensy's VUSB/VIN
 pad** so USB-data and the buck don't both push 5 V onto VIN.
 
-## Wiring direction (the #1 gotcha)
+## Wiring direction (the #1 gotcha — this one bit us)
 
 Board **CTX → Teensy CAN-TX** (22 / 1), board **CRX → Teensy CAN-RX** (23 / 0) —
-straight through, *not* crossed (the transceiver is a level converter, not a UART
-peer). If you get no comms, swap CTX/CRX — some clone boards mislabel them.
+straight through *by the silk*, because the transceiver is a level converter, not a
+UART peer (no TX↔RX crossover like fiber or serial).
+
+**BUT cheap SN65HVD230 clones frequently mislabel CTX/CRX.** On a real bring-up our
+"straight-through per the silk" was actually crossed at the chip, and the symptom was
+nasty-but-specific: `INFO`/`PING` worked, power/ground checked out, the bus tap had
+continuity — and yet **every module timed out and `SNIFF` showed 0 frames.** The fix
+was to **swap the two data wires on Teensy 22 ↔ 23** (and 1 ↔ 0 for Head 2). Hit that
+exact symptom set? Swap the data pair first — it costs 30 seconds.
 
 ## Transceivers — do NOT mix these up
 

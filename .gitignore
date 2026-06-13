@@ -7,3 +7,6 @@
 *.bin
 __pycache__/
 *.pyc
+
+# but DO publish the pre-built firmware
+!firmware/*.hex
