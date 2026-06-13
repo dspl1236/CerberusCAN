@@ -178,6 +178,32 @@ static void do_sniff(BUS& bus, uint32_t ms){
   Serial.print("DONE:"); Serial.println(count);
 }
 
+// Active discovery: sweep VAG 11-bit UDS request IDs, send TesterPresent (3E 00),
+// report any module that answers. Promiscuous read; ignores our own TX echo.
+template <typename BUS>
+static void do_scan(BUS& bus, uint32_t lo, uint32_t hi){
+  uint32_t found = 0;
+  for (uint32_t tx = lo; tx <= hi; tx++){
+    CAN_message_t m; m.id = tx; m.flags.extended = 0; m.len = 8;
+    for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
+    m.buf[0]=0x02; m.buf[1]=0x3E; m.buf[2]=0x00;       // single-frame TesterPresent
+    bus.write(m);
+    uint32_t dl = millis() + 40;                        // reply window (routed modules are slower)
+    while ((int32_t)(dl-millis())>0){
+      CAN_message_t r;
+      if (bus.read(r)){
+        if (r.id == tx) continue;                       // ignore self-reception echo
+        Serial.print("FOUND:"); Serial.print(tx, HEX); Serial.print(':');
+        Serial.print(r.id, HEX); Serial.print(':');
+        printHex(r.buf, r.len); Serial.println();
+        found++;
+        break;
+      }
+    }
+  }
+  Serial.print("DONE:"); Serial.println(found);
+}
+
 // ---------------- line protocol ----------------
 static int split(const String& s, char sep, String* parts, int maxp){
   int count=0, start=0;
@@ -211,6 +237,15 @@ void handleLine(String line){
     else Serial.println("ERR:bus (1|2)");
     return;
   }
+  if (kw=="SCAN"){
+    int bus = (np>=2)?parts[1].toInt():1;
+    uint32_t lo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x700;
+    uint32_t hi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7EF;
+    if (bus==1) do_scan(Head1, lo, hi);
+    else if (bus==2) do_scan(Head2, lo, hi);
+    else Serial.println("ERR:bus (1|2)");
+    return;
+  }
   if (kw=="UDS"){
     if (np<5){ Serial.println("ERR:format (UDS:bus:TX:RX:HEX)"); return; }
     int bus = parts[1].toInt();
@@ -234,7 +269,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SNIFF|UDS|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|UDS|TX:RX:HEX)");
 }
 
 void setup(){

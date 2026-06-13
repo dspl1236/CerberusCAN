@@ -67,6 +67,7 @@ ASCII, one command per line — Cerberus does all the ISO-TP framing:
 <TXID>:<RXID>:<HEX>             UDS on Head 1        710:77A:2200BE
 UDS:<bus>:<TXID>:<RXID>:<HEX>   UDS on bus 1|2       UDS:1:710:77A:2E00BE…
 SNIFF:<bus>:<ms>                passive dump (ms=0 = until a serial byte)
+SCAN:<bus>                      active module discovery (TesterPresent sweep 0x700-0x7EF)
 INFO                            firmware + bus config
 PING                            -> PONG
 
@@ -83,6 +84,8 @@ framed. The PC just sends UDS payloads: `1003`, then `2200BE` to read or `2E00BE
 - `cerberus_probe.py` — Experiment 1: reads `0x00BE` across J533/J255/J136/J285 and prints the VIN-bound vs. module-bound verdict
 - `cerberus_sniff.py` — passive `SNIFF` capture of a bus, live dump + per-ID summary (the CP handshake on Head 2); 0 frames on the comfort bus = it's fault-tolerant
 - `cerberus_write.py` — careful **generic** UDS write: read-before → confirm → `2E` → read-back verify, with `--dry-run`
+
+**Seen in the wild:** a real [`SCAN` of a 2013 Audi A6 C7](docs/example-scan-c7-a6.md) — the gateway routes everything to Head 1, so one head mapped and **named 14 modules** (gateway, engine Simos8.5, ZF8HP trans, ABS, HVAC, steering, parking brake…).
 
 ## Roadmap
 
