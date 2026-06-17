@@ -186,6 +186,29 @@ static void do_raw(BUS& bus, uint32_t id, const uint8_t* data, int n){
   Serial.println(bus.write(m) ? "OK:sent" : "ERR:tx-fail");
 }
 
+// Send ONE classic CAN frame in NORMAL (TX) mode, then capture RX frames for waitms ms.
+// The missing primitive: SNIFF is listen-only (can't TX) and RAW is send-only (can't RX).
+// CANX = send-then-listen, which lets the host drive low-level request/response protocols
+// like the TC1796 CAN bootstrap loader (BSL) entirely from a script — no per-tweak reflash.
+// waitms==0 => fire-and-forget (fast streaming, e.g. BSL block upload).
+template <typename BUS>
+static void do_canx(BUS& bus, uint32_t id, const uint8_t* data, int n, uint32_t waitms){
+  CAN_message_t m; m.id=id; m.flags.extended=0; m.len=(n>8)?8:n;
+  for (int i=0;i<m.len;i++) m.buf[i]=data[i];
+  if (!bus.write(m)){ Serial.println("ERR:tx-fail"); return; }
+  if (waitms==0){ Serial.println("OK:sent"); return; }
+  uint32_t start=millis(), cnt=0;
+  while ((int32_t)((start+waitms)-millis())>0){
+    CAN_message_t r;
+    if (bus.read(r)){
+      Serial.print("RX:"); Serial.print(r.id, HEX); Serial.print(':');
+      printHex(r.buf, r.len); Serial.println();
+      cnt++;
+    }
+  }
+  Serial.print("DONE:"); Serial.println(cnt);
+}
+
 // Passive monitor. ms=0 -> run until any serial byte arrives. Only emits frames whose
 // id is in [idlo, idhi] (software accept-range; default = full 0x000..0x7FF).
 // The SNIFF handler puts the controller in hardware LISTEN-ONLY (LOM) first, so this is
@@ -418,6 +441,20 @@ void handleLine(String line){
     else Serial.println("ERR:bus (1|2)");
     return;
   }
+  if (kw=="CANX"){
+    // CANX:bus:ID:HEX[:waitms]  — send one classic frame (TX mode) then listen waitms ms.
+    // RX frames print as  RX:<id>:<hex>  then  DONE:<n>  (waitms>0), or OK:sent (waitms==0).
+    if (np<4){ Serial.println("ERR:format (CANX:bus:ID:HEX[:waitms])"); return; }
+    int bus = parts[1].toInt();
+    uint32_t id = strtoul(parts[2].c_str(), nullptr, 16);
+    uint8_t d[8]; int n = hexBytes(parts[3], d, sizeof(d));
+    if (n<0){ Serial.println("ERR:hex (>8 bytes / odd)"); return; }
+    uint32_t waitms = (np>=5)?(uint32_t)parts[4].toInt():0;
+    if (bus==1) do_canx(Head1, id, d, n, waitms);
+    else if (bus==2) do_canx(Head2, id, d, n, waitms);
+    else Serial.println("ERR:bus (1|2)");
+    return;
+  }
   if (kw=="UDS"){
     if (np<5){ Serial.println("ERR:format (UDS:bus:TX:RX:HEX)"); return; }
     int bus = parts[1].toInt();
@@ -441,7 +478,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|TP|RAW|UDS|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
