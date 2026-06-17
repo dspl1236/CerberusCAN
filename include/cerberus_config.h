@@ -1,16 +1,16 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.5.0-canx"
+#define CERBERUS_VERSION "0.6.0-duallog"
 
 // ---- Bus baud rates ----
-#define BUS1_BAUD   500000   // Head 1: Powertrain/Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
-#define BUS2_BAUD   100000   // Head 2: Comfort/Convenience CAN   (OBD 3/11) — HS, SN65HVD230
-// Both heads use a 3.3 V SN65HVD230. Head 2 assumes the comfort bus is HIGH-SPEED at
-// 100k; if it sniffs nothing the bus is LOW-SPEED FAULT-TOLERANT (ISO 11898-3) — the
-// HVD230 can't read it and that head needs an FT part (TJA1055T/3). Confirm via idle
-// volts on OBD 3/11 (both ~2.5 V = HS; split ~0 V / ~5 V = FT).
-// Head 3: CAN-FD (CAN3, pins 30/31) needs an FD-rated transceiver, NOT the SN65HVD230.
+#define BUS1_BAUD   500000   // Head 1: active VCI on the Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
+#define BUS2_BAUD   500000   // Head 2: 2nd HVD230 tapped on the SAME diag bus (OBD 6/14),
+                             //         held LISTEN-ONLY = the always-on background logger (MON).
+// Two SN65HVD230s share OBD 6/14: Head 1 talks (active), Head 2 only listens (passive log).
+// IMPORTANT: remove the 120R termination resistor from BOTH HVD230 breakouts — the car already
+// has ~60R on the bus, so the two taps must add NO termination (high-impedance stubs only).
+// Head 3: CAN-FD (CAN3, pins 30/31) needs an FD-rated transceiver — spare, unused for now.
 
 // ---- ISO-TP ----
 #define PAD_BYTE        0x00 // frame padding (some VAG modules prefer 0xAA/0xCC — change if fussy)
