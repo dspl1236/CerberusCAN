@@ -6,22 +6,31 @@
  *   Head 3: CAN-FD spare                (CAN3, pins 30/31)           -- stub (needs FD xcvr)
  *
  * A USB-serial bridge. On either classic bus it runs a full ISO-TP/UDS exchange
- * (read AND write — single- and multi-frame, with flow control), and it can
- * passively sniff a bus to capture the Component-Protection handshake.
+ * (read AND write — single- and multi-frame, with flow control), passively sniffs,
+ * and now reports WHERE an exchange fails so gateway-routing problems are diagnosable.
  *
  * Line protocol (115200, ASCII) — one command per line:
  *
  *   <TXID>:<RXID>:<HEX>             UDS on Head 1 (shorthand)      710:77A:2200BE
  *   UDS:<bus>:<TXID>:<RXID>:<HEX>   UDS on bus 1|2 (explicit)      UDS:1:710:77A:2E00BE..
+ *   RAW:<bus>:<ID>:<HEX>           send ONE raw frame (<=8B), no ISO-TP   RAW:1:710:023E00
+ *   SCAN:<bus>[:lo:hi[:winms]]     TesterPresent sweep (winms reply window, default 120)
  *   SNIFF:<bus>:<ms>               passive dump (ms=0 = until any serial byte)
+ *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
  *   INFO                           firmware + bus config
  *   PING                           -> PONG
  *
- * Replies:  OK:<resphex> | ERR:<reason> | (sniff) RX:<ms>:<id>:<data> ... DONE:<n>
+ * Replies:  OK:<resphex>
+ *           ERR:tx-fail | ERR:no-flow-control | ERR:no-response | ERR:partial:<got>/<total>
+ *           (sniff) RX:<ms>:<id>:<data> ... DONE:<n>
  *
- * Writes need no special command: a request whose payload is >7 bytes
- * (e.g. 2E 00 BE + 34 = 37 bytes) is automatically First-Frame / Consecutive-Frame
- * framed with flow-control handling.
+ * Diagnostic ERR codes (the point of v0.3.0):
+ *   tx-fail          our frame never made it onto the wire (no xcvr/bus ACK -> bus down/idle)
+ *   no-flow-control  module RX'd our First Frame but never sent CTS (busy / routing dropped it)
+ *   no-response      NOTHING came back on RXID  (wrong response ID / module not routed / silent)
+ *   partial:g/t      we got a First Frame + g of t bytes, then it went quiet (routed-bus stall)
+ *
+ * Writes need no special command: a request payload >7 bytes auto First-Frame/CF frames.
  *
  * GPLv3. github.com/dspl1236/CerberusCAN
  */
@@ -30,9 +39,7 @@
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1;   // diagnostic, 500k  (OBD 6/14)
 FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2;   // comfort,    100k  (OBD 3/11)
-// FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> Head3;  // CAN-FD (pins 30/31).
-// Head 3 needs an FD-RATED transceiver (TCAN33x / SN65HVD25x family) — NOT the
-// 1 Mbps SN65HVD230. Only MQB-Evo / MLB-Evo use CAN-FD; classic-CAN cars (C7) never do.
+// FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> Head3;  // CAN-FD (pins 30/31), classic-CAN C7 never uses it.
 
 // ---------------- hex helpers ----------------
 static uint8_t nib(char c){
@@ -73,54 +80,57 @@ static int wait_fc(BUS& bus, uint32_t rx, uint8_t& bs, uint8_t& stmin){
   return 2;                                                // timeout
 }
 
-// Send a UDS request of any length as ISO-TP. true on success.
+// Send a UDS request of any length as ISO-TP.  0=ok, 1=tx-fail, 2=no-flow-control.
 template <typename BUS>
-static bool isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, uint16_t len){
+static int isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, uint16_t len){
   CAN_message_t m; m.id=tx; m.flags.extended=0; m.len=8;
   for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
 
   if (len<=7){                                      // Single Frame
     m.buf[0]=len & 0x0F;
     for (uint16_t i=0;i<len;i++) m.buf[1+i]=req[i];
-    return bus.write(m);
+    return bus.write(m) ? 0 : 1;
   }
 
   m.buf[0]=0x10 | ((len>>8)&0x0F);                  // First Frame
   m.buf[1]=len & 0xFF;
   for (int i=0;i<6;i++) m.buf[2+i]=req[i];
-  if (!bus.write(m)) return false;
+  if (!bus.write(m)) return 1;
   uint16_t sent=6;
 
   uint8_t bs=0, stmin=0;
-  if (wait_fc(bus, rx, bs, stmin)!=0) return false; // first FC must be CTS
+  if (wait_fc(bus, rx, bs, stmin)!=0) return 2;     // first FC must be CTS
 
   uint8_t sn=1, inblock=0;
   while (sent<len){                                 // Consecutive Frames
     for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
     m.buf[0]=0x20 | (sn & 0x0F);
     for (int i=0;i<7 && sent<len;i++) m.buf[1+i]=req[sent++];
-    if (!bus.write(m)) return false;
+    if (!bus.write(m)) return 1;
     sn=(sn+1)&0x0F; inblock++;
     if (sent<len){
       stmin_delay(stmin);
       if (bs!=0 && inblock>=bs){                     // block full -> next FC
         inblock=0;
-        if (wait_fc(bus, rx, bs, stmin)!=0) return false;
+        if (wait_fc(bus, rx, bs, stmin)!=0) return 2;
       }
     }
   }
-  return true;
+  return 0;
 }
 
-// Receive a UDS response (ISO-TP). length, or -1 on timeout.
+// Receive a UDS response (ISO-TP). >=0 length; -1 nothing seen; -2 partial (got<total).
+// sawAny is set true if ANY frame from rx arrived; got/total report partial progress.
 template <typename BUS>
-static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_t maxresp){
+static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_t maxresp,
+                      bool& sawAny, uint16_t& got, uint16_t& total){
   uint32_t dl = millis()+UDS_TIMEOUT_MS;
-  uint16_t total=0, got=0; bool multi=false;
+  got=0; total=0; sawAny=false; bool multi=false;
   while ((int32_t)(dl-millis())>0){
     CAN_message_t r;
     if (!bus.read(r)) continue;
     if (r.id != rx) continue;
+    sawAny=true;
     uint8_t pci = r.buf[0]>>4;
 
     if (pci==0){                                    // Single Frame
@@ -145,22 +155,37 @@ static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_
     }
     // pci==3 (stray flow control): ignore
   }
-  return (multi && got)?(int)got:-1;
+  return (multi && got)? -2 : -1;                   // -2 = partial, -1 = nothing usable
 }
 
 template <typename BUS>
 static void do_uds(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, uint16_t reqlen){
-  if (!isotp_send(bus, tx, rx, req, reqlen)){ Serial.println("ERR:tx (no flow-control / bus down?)"); return; }
-  uint8_t resp[256];
-  int n = isotp_recv(bus, tx, rx, resp, sizeof(resp));
-  if (n<0){ Serial.println("ERR:timeout"); return; }
+  int s = isotp_send(bus, tx, rx, req, reqlen);
+  if (s==1){ Serial.println("ERR:tx-fail (frame never ACKed on the wire — bus down / wrong head)"); return; }
+  if (s==2){ Serial.println("ERR:no-flow-control (module never sent CTS to our First Frame)"); return; }
+
+  static uint8_t resp[4096];
+  bool sawAny=false; uint16_t got=0, total=0;
+  int n = isotp_recv(bus, tx, rx, resp, sizeof(resp), sawAny, got, total);
+  if (n==-1){ Serial.println(sawAny ? "ERR:no-response (frames on RXID but not a usable reply)"
+                                    : "ERR:no-response (NOTHING on RXID — wrong id / not routed / module silent)"); return; }
+  if (n==-2){ Serial.print("ERR:partial:"); Serial.print(got); Serial.print('/'); Serial.print(total);
+              Serial.println(" (First Frame seen, then the routed bus went quiet)"); return; }
   Serial.print("OK:"); printHex(resp,n); Serial.println();
+}
+
+// Send ONE raw CAN frame (no ISO-TP). For poking the gateway / debugging routing.
+template <typename BUS>
+static void do_raw(BUS& bus, uint32_t id, const uint8_t* data, int n){
+  CAN_message_t m; m.id=id; m.flags.extended=0; m.len=8;
+  for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
+  for (int i=0;i<n && i<8;i++) m.buf[i]=data[i];
+  Serial.println(bus.write(m) ? "OK:sent" : "ERR:tx-fail");
 }
 
 // Passive monitor. ms=0 -> run until any serial byte arrives.
 // NOTE: not hardware listen-only — Cerberus ACKs at the configured baud, so only
-// sniff a bus once you know its speed (HS vs FT, the OBD 3/11 check). Wrong baud
-// can inject error frames. True silent mode is a roadmap item.
+// sniff a bus once you know its speed. Wrong baud can inject error frames.
 template <typename BUS>
 static void do_sniff(BUS& bus, uint32_t ms){
   uint32_t start=millis(), count=0;
@@ -178,17 +203,34 @@ static void do_sniff(BUS& bus, uint32_t ms){
   Serial.print("DONE:"); Serial.println(count);
 }
 
-// Active discovery: sweep VAG 11-bit UDS request IDs, send TesterPresent (3E 00),
-// report any module that answers. Promiscuous read; ignores our own TX echo.
+// ---- background TesterPresent (NON-BLOCKING; serviced every loop) ----
+// Holds a routed diagnostic channel open WITHOUT freezing the command interface, so a
+// long flash (erase -> download -> many TransferData chunks) keeps its session alive.
+static int      tp_bus  = 0;          // 0 = off, else 1|2
+static uint32_t tp_tx   = 0;
+static uint32_t tp_ms   = 0;
+static uint32_t tp_last = 0;
+static void tp_service(){
+  if (!tp_bus) return;
+  if (millis() - tp_last < tp_ms) return;
+  CAN_message_t m; m.id = tp_tx; m.flags.extended = 0; m.len = 8;
+  for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
+  m.buf[0]=0x02; m.buf[1]=0x3E; m.buf[2]=0x80;       // TesterPresent, suppress positive
+  if (tp_bus==1) Head1.write(m); else if (tp_bus==2) Head2.write(m);
+  tp_last = millis();
+}
+
+// Active discovery: sweep VAG 11-bit UDS request IDs, send TesterPresent, report responders.
+// winms reply window now configurable — gateway-routed modules need ~100 ms, not 40.
 template <typename BUS>
-static void do_scan(BUS& bus, uint32_t lo, uint32_t hi){
+static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
   uint32_t found = 0;
   for (uint32_t tx = lo; tx <= hi; tx++){
     CAN_message_t m; m.id = tx; m.flags.extended = 0; m.len = 8;
     for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
     m.buf[0]=0x02; m.buf[1]=0x3E; m.buf[2]=0x00;       // single-frame TesterPresent
     bus.write(m);
-    uint32_t dl = millis() + 40;                        // reply window (routed modules are slower)
+    uint32_t dl = millis() + winms;                     // reply window (routed modules are slow)
     while ((int32_t)(dl-millis())>0){
       CAN_message_t r;
       if (bus.read(r)){
@@ -225,7 +267,9 @@ void handleLine(String line){
   if (kw=="INFO"){
     Serial.print("CERBERUS:"); Serial.print(CERBERUS_VERSION);
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
-    Serial.print(" CAN2="); Serial.println(BUS2_BAUD);
+    Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
+    Serial.print(" tmo="); Serial.print(UDS_TIMEOUT_MS);
+    Serial.print(" respmax=4096"); Serial.println();
     return;
   }
   if (kw=="SNIFF"){
@@ -237,12 +281,39 @@ void handleLine(String line){
     else Serial.println("ERR:bus (1|2)");
     return;
   }
+  if (kw=="TP"){
+    // background, non-blocking:  TP:bus:TX:ms  starts ;  TP:STOP (or TP:0) stops.
+    if (np>=2 && (parts[1].equalsIgnoreCase("STOP") || parts[1]=="0")){ tp_bus=0; Serial.println("OK:tp-off"); return; }
+    if (np<4){ Serial.println("ERR:format (TP:bus:TX:ms | TP:STOP)"); return; }
+    int bus = parts[1].toInt();
+    if (bus!=1 && bus!=2){ Serial.println("ERR:bus (1|2)"); return; }
+    tp_bus = bus;
+    tp_tx  = strtoul(parts[2].c_str(), nullptr, 16);
+    tp_ms  = (uint32_t)parts[3].toInt(); if (tp_ms<20) tp_ms=20;
+    tp_last = 0;
+    Serial.print("OK:tp-on bus="); Serial.print(tp_bus);
+    Serial.print(" tx="); Serial.print(tp_tx,HEX);
+    Serial.print(" ms="); Serial.println(tp_ms);
+    return;
+  }
   if (kw=="SCAN"){
     int bus = (np>=2)?parts[1].toInt():1;
     uint32_t lo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x700;
     uint32_t hi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7EF;
-    if (bus==1) do_scan(Head1, lo, hi);
-    else if (bus==2) do_scan(Head2, lo, hi);
+    uint32_t win= (np>=5)?(uint32_t)parts[4].toInt():120;
+    if (bus==1) do_scan(Head1, lo, hi, win);
+    else if (bus==2) do_scan(Head2, lo, hi, win);
+    else Serial.println("ERR:bus (1|2)");
+    return;
+  }
+  if (kw=="RAW"){
+    if (np<4){ Serial.println("ERR:format (RAW:bus:ID:HEX)"); return; }
+    int bus = parts[1].toInt();
+    uint32_t id = strtoul(parts[2].c_str(), nullptr, 16);
+    uint8_t d[8]; int n = hexBytes(parts[3], d, sizeof(d));
+    if (n<0){ Serial.println("ERR:hex (>8 bytes / odd)"); return; }
+    if (bus==1) do_raw(Head1, id, d, n);
+    else if (bus==2) do_raw(Head2, id, d, n);
     else Serial.println("ERR:bus (1|2)");
     return;
   }
@@ -251,7 +322,7 @@ void handleLine(String line){
     int bus = parts[1].toInt();
     uint32_t tx = strtoul(parts[2].c_str(), nullptr, 16);
     uint32_t rx = strtoul(parts[3].c_str(), nullptr, 16);
-    uint8_t req[130]; int reqlen = hexBytes(parts[4], req, sizeof(req));
+    static uint8_t req[520]; int reqlen = hexBytes(parts[4], req, sizeof(req));
     if (reqlen<=0){ Serial.println("ERR:hex (too long / odd)"); return; }
     if (bus==1) do_uds(Head1, tx, rx, req, reqlen);
     else if (bus==2) do_uds(Head2, tx, rx, req, reqlen);
@@ -263,13 +334,13 @@ void handleLine(String line){
   if (np==3){
     uint32_t tx = strtoul(parts[0].c_str(), nullptr, 16);
     uint32_t rx = strtoul(parts[1].c_str(), nullptr, 16);
-    uint8_t req[130]; int reqlen = hexBytes(parts[2], req, sizeof(req));
+    static uint8_t req[520]; int reqlen = hexBytes(parts[2], req, sizeof(req));
     if (reqlen<=0){ Serial.println("ERR:hex (too long / odd)"); return; }
     do_uds(Head1, tx, rx, req, reqlen);
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|UDS|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|TP|RAW|UDS|TX:RX:HEX)");
 }
 
 void setup(){
@@ -283,6 +354,7 @@ void loop(){
   while (Serial.available()){
     char c = Serial.read();
     if (c=='\n' || c=='\r'){ if (inbuf.length()){ handleLine(inbuf); inbuf=""; } }
-    else if (inbuf.length() < 300) inbuf += c;
+    else if (inbuf.length() < 1100) inbuf += c;       // room for a full TransferData chunk
   }
+  tp_service();                                       // non-blocking TesterPresent keep-alive
 }

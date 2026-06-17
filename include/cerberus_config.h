@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.2.0-wip"
+#define CERBERUS_VERSION "0.3.1-tp"
 
 // ---- Bus baud rates ----
 #define BUS1_BAUD   500000   // Head 1: Powertrain/Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
@@ -14,7 +14,7 @@
 
 // ---- ISO-TP ----
 #define PAD_BYTE        0x00 // frame padding (some VAG modules prefer 0xAA/0xCC — change if fussy)
-#define UDS_TIMEOUT_MS  1500 // per-frame response / flow-control window
+#define UDS_TIMEOUT_MS  6000 // per-frame response / flow-control window (VAG gateways can take ~5 s on CP DIDs like 0x00BE — keep margin)
 
 // ---- Teensy 4.1 FlexCAN pin map (fixed by the i.MX RT1062 mux) ----
 //   Head 1  CAN1: TX 22, RX 23
