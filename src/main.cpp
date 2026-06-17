@@ -15,7 +15,8 @@
  *   UDS:<bus>:<TXID>:<RXID>:<HEX>   UDS on bus 1|2 (explicit)      UDS:1:710:77A:2E00BE..
  *   RAW:<bus>:<ID>:<HEX>           send ONE raw frame (<=8B), no ISO-TP   RAW:1:710:023E00
  *   SCAN:<bus>[:lo:hi[:winms]]     TesterPresent sweep (winms reply window, default 120)
- *   SNIFF:<bus>:<ms>               passive dump (ms=0 = until any serial byte)
+ *   SNIFF:<bus>:<ms>[:idlo:idhi]   passive LISTEN-ONLY dump (no ACK; ms=0=until byte; optional ID range)
+ *   STATS:<bus>                    CAN controller health: error counters / fault state / RX overrun
  *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
  *   INFO                           firmware + bus config
  *   PING                           -> PONG
@@ -183,24 +184,29 @@ static void do_raw(BUS& bus, uint32_t id, const uint8_t* data, int n){
   Serial.println(bus.write(m) ? "OK:sent" : "ERR:tx-fail");
 }
 
-// Passive monitor. ms=0 -> run until any serial byte arrives.
-// NOTE: not hardware listen-only — Cerberus ACKs at the configured baud, so only
-// sniff a bus once you know its speed. Wrong baud can inject error frames.
+// Passive monitor. ms=0 -> run until any serial byte arrives. Only emits frames whose
+// id is in [idlo, idhi] (software accept-range; default = full 0x000..0x7FF).
+// The SNIFF handler puts the controller in hardware LISTEN-ONLY (LOM) first, so this is
+// truly passive — it never ACKs and can't disturb a tester (e.g. ODIS) on the same bus.
 template <typename BUS>
-static void do_sniff(BUS& bus, uint32_t ms){
-  uint32_t start=millis(), count=0;
+static void do_sniff(BUS& bus, uint32_t ms, uint32_t idlo, uint32_t idhi){
+  uint32_t start=millis(), count=0, overrun=0;
   for (;;){
     if (ms!=0 && (int32_t)((start+ms)-millis())<=0) break;
     if (ms==0 && Serial.available()){ while(Serial.available()) Serial.read(); break; }
     CAN_message_t r;
     if (bus.read(r)){
+      if (r.id < idlo || r.id > idhi) continue;       // ID accept-range filter
+      if (r.flags.overrun) overrun++;                 // RX FIFO overran before this frame
       Serial.print("RX:"); Serial.print(millis()-start); Serial.print(':');
       Serial.print(r.id, HEX); Serial.print(':');
       printHex(r.buf, r.len); Serial.println();
       count++;
     }
   }
-  Serial.print("DONE:"); Serial.println(count);
+  Serial.print("DONE:"); Serial.print(count);
+  if (overrun){ Serial.print(" overrun:"); Serial.print(overrun); }  // dropped-frame hint
+  Serial.println();
 }
 
 // ---- background TesterPresent (NON-BLOCKING; serviced every loop) ----
@@ -272,13 +278,43 @@ void handleLine(String line){
     Serial.print(" respmax=4096"); Serial.println();
     return;
   }
+  if (kw=="STATS"){
+    // CAN controller health — error counters + fault state. Use it to see whether a
+    // sniff/exchange is dropping frames or the bus is erroring (e.g. ACK/CRC errors).
+    int bus = (np>=2)?parts[1].toInt():1;
+    if (bus!=1 && bus!=2){ Serial.println("ERR:bus (1|2)"); return; }
+    CAN_error_t e;
+    if (bus==1) Head1.error(e,false); else Head2.error(e,false);
+    Serial.print("STATS:bus="); Serial.print(bus);
+    Serial.print(" state="); Serial.print(e.state);
+    Serial.print(" fltconf="); Serial.print(e.FLT_CONF);
+    Serial.print(" rxerr="); Serial.print(e.RX_ERR_COUNTER);
+    Serial.print(" txerr="); Serial.print(e.TX_ERR_COUNTER);
+    Serial.print(" ack="); Serial.print(e.ACK_ERR);
+    Serial.print(" crc="); Serial.print(e.CRC_ERR);
+    Serial.print(" frm="); Serial.print(e.FRM_ERR);
+    Serial.print(" stf="); Serial.print(e.STF_ERR);
+    Serial.print(" esr1=0x"); Serial.println(e.ESR1, HEX);
+    return;
+  }
   if (kw=="SNIFF"){
-    if (np<2){ Serial.println("ERR:format (SNIFF:bus:ms)"); return; }
+    if (np<2){ Serial.println("ERR:format (SNIFF:bus:ms[:idlo:idhi])"); return; }
     int bus = parts[1].toInt();
-    uint32_t ms = (np>=3)?(uint32_t)parts[2].toInt():0;
-    if (bus==1) do_sniff(Head1, ms);
-    else if (bus==2) do_sniff(Head2, ms);
-    else Serial.println("ERR:bus (1|2)");
+    uint32_t ms   = (np>=3)?(uint32_t)parts[2].toInt():0;
+    uint32_t idlo = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x000;
+    uint32_t idhi = (np>=5)?strtoul(parts[4].c_str(),nullptr,16):0x7FF;
+    // Passive sniff in hardware LISTEN-ONLY (LOM): never ACK, never disturb the bus
+    // (safe to run alongside ODIS). Restore TX on exit. enableFIFO() is re-asserted
+    // after each baud/LOM re-init so reception keeps working.
+    if (bus==1){
+      Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();
+      do_sniff(Head1, ms, idlo, idhi);
+      Head1.setBaudRate(BUS1_BAUD, TX); Head1.enableFIFO();
+    } else if (bus==2){
+      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      do_sniff(Head2, ms, idlo, idhi);
+      Head2.setBaudRate(BUS2_BAUD, TX); Head2.enableFIFO();
+    } else Serial.println("ERR:bus (1|2)");
     return;
   }
   if (kw=="TP"){
