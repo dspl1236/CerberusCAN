@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.3.1-tp"
+#define CERBERUS_VERSION "0.4.0-lom"
 
 // ---- Bus baud rates ----
 #define BUS1_BAUD   500000   // Head 1: Powertrain/Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
