@@ -1,9 +1,9 @@
 /*
  * Cerberus — Teensy 4.1 tri-CAN OBD interface for VAG
  *
- *   Head 1: Powertrain/Diagnostic CAN  (CAN1, 500 kbps, OBD 6/14)   -- active
- *   Head 2: Comfort/Convenience CAN     (CAN2, 100 kbps, OBD 3/11)   -- active (sniff + UDS)
- *   Head 3: CAN-FD spare                (CAN3, pins 30/31)           -- stub (needs FD xcvr)
+ *   Head 1: Diagnostic CAN  (CAN1, 500 kbps, OBD 6/14)     -- active VCI (UDS read/write/CP)
+ *   Head 2: 2nd tap, SAME bus (CAN2, 500 kbps, OBD 6/14)   -- LISTEN-ONLY always-on logger (MON)
+ *   Head 3: CAN-FD spare    (CAN3, pins 30/31)             -- stub (needs FD xcvr)
  *
  * A USB-serial bridge. On either classic bus it runs a full ISO-TP/UDS exchange
  * (read AND write — single- and multi-frame, with flow control), passively sniffs,
@@ -16,6 +16,8 @@
  *   RAW:<bus>:<ID>:<HEX>           send ONE raw frame (<=8B), no ISO-TP   RAW:1:710:023E00
  *   SCAN:<bus>[:lo:hi[:winms]]     TesterPresent sweep (winms reply window, default 120)
  *   SNIFF:<bus>:<ms>[:idlo:idhi]   passive LISTEN-ONLY dump (no ACK; ms=0=until byte; optional ID range)
+ *   MON:on[:idlo:idhi] | MON:off   always-on Head-2 background logger -> M2:<ms>:<id>:<hex> lines
+ *                                  (runs concurrently with active Head-1 UDS/CP — capture while you drive)
  *   STATS:<bus>                    CAN controller health: error counters / fault state / RX overrun
  *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
  *   INFO                           firmware + bus config
@@ -58,6 +60,29 @@ static int hexBytes(const String& s, uint8_t* out, int maxlen){
 }
 static void printHex(const uint8_t* d,int n){ for(int i=0;i<n;i++){ if(d[i]<16)Serial.print('0'); Serial.print(d[i],HEX);} }
 
+// ---------------- Head 2 always-on background logger ----------------
+// Head 2 is a SECOND SN65HVD230 wired in parallel with Head 1 on OBD 6/14, held in
+// LISTEN_ONLY: it never ACKs or drives, it only records. MON streams every Head-2 frame
+// as  M2:<ms>:<id>:<hex>[:OVR]  continuously — interleaved with normal command replies —
+// so you can run an active UDS/CP exchange on Head 1 and capture the unmasked wire on
+// Head 2 at the same time, from one box. pump_mon() is also called inside the ISO-TP wait
+// loops, so capture keeps flowing DURING a Head-1 transaction (when the CP handshake rides).
+static bool     mon_on   = false;
+static uint32_t mon_idlo = 0x000, mon_idhi = 0x7FF;
+static uint32_t mon_t0   = 0;
+static void pump_mon(){
+  if (!mon_on) return;
+  CAN_message_t r;
+  while (Head2.read(r)){
+    if (r.id < mon_idlo || r.id > mon_idhi) continue;
+    Serial.print("M2:"); Serial.print(millis()-mon_t0); Serial.print(':');
+    Serial.print(r.id, HEX); Serial.print(':');
+    printHex(r.buf, r.len);
+    if (r.flags.overrun) Serial.print(":OVR");        // FIFO overran before this frame
+    Serial.println();
+  }
+}
+
 // ---------------- ISO-TP ----------------
 static inline void stmin_delay(uint8_t st){
   if (st==0) return;
@@ -71,6 +96,7 @@ template <typename BUS>
 static int wait_fc(BUS& bus, uint32_t rx, uint8_t& bs, uint8_t& stmin){
   uint32_t dl = millis()+UDS_TIMEOUT_MS;
   while ((int32_t)(dl-millis())>0){
+    pump_mon();                                     // keep the Head-2 logger draining
     CAN_message_t r;
     if (!bus.read(r)) continue;
     if (r.id != rx) continue;
@@ -130,6 +156,7 @@ static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_
   uint32_t dl = millis()+UDS_TIMEOUT_MS;
   got=0; total=0; sawAny=false; bool multi=false;
   while ((int32_t)(dl-millis())>0){
+    pump_mon();                                     // keep the Head-2 logger draining
     CAN_message_t r;
     if (!bus.read(r)) continue;
     if (r.id != rx) continue;
@@ -385,6 +412,22 @@ void handleLine(String line){
     Serial.print(" esr1=0x"); Serial.println(e.ESR1, HEX);
     return;
   }
+  if (kw=="MON"){
+    // MON:on[:idlo:idhi] | MON:off  — toggle the always-on Head-2 listen-only background
+    // logger. While on, every Head-2 frame streams as  M2:<ms>:<id>:<hex>[:OVR]  (interleaved
+    // with command replies). Head 2 is a passive tap on OBD 6/14 alongside Head 1's active VCI.
+    if (np>=2 && parts[1].equalsIgnoreCase("off")){ mon_on=false; Serial.println("OK:mon-off"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("on")){
+      mon_idlo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x000;
+      mon_idhi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7FF;
+      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      mon_t0 = millis(); mon_on = true;
+      Serial.println("OK:mon-on");
+      return;
+    }
+    Serial.println("ERR:format (MON:on[:idlo:idhi] | MON:off)");
+    return;
+  }
   if (kw=="SNIFF"){
     if (np<2){ Serial.println("ERR:format (SNIFF:bus:ms[:idlo:idhi])"); return; }
     int bus = parts[1].toInt();
@@ -478,13 +521,13 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
   Serial.begin(115200);
   Head1.begin(); Head1.setBaudRate(BUS1_BAUD); Head1.setMaxMB(16); Head1.enableFIFO();
-  Head2.begin(); Head2.setBaudRate(BUS2_BAUD); Head2.setMaxMB(16); Head2.enableFIFO();
+  Head2.begin(); Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.setMaxMB(16); Head2.enableFIFO();
 }
 
 String inbuf;
@@ -504,6 +547,7 @@ void loop(){
   if (slcan_mode){                                    // SLCAN: stream RX frames out as t/T lines
     if (slcan_open){ CAN_message_t r; while (Head1.read(r)) slcan_emit(r); }
   } else {
+    pump_mon();                                       // always-on Head-2 background logger
     tp_service();                                     // native: non-blocking TesterPresent keep-alive
   }
 }
