@@ -20,6 +20,8 @@
  *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
  *   INFO                           firmware + bus config
  *   PING                           -> PONG
+ *   SLCAN                          enter Lawicel SLCAN mode on Head 1 (SavvyCAN / slcand / python-can);
+ *                                  also auto-entered on the first SLCAN cmd (O/C/L/S<n>/t/T). Reset to exit.
  *
  * Replies:  OK:<resphex>
  *           ERR:tx-fail | ERR:no-flow-control | ERR:no-response | ERR:partial:<got>/<total>
@@ -252,6 +254,68 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
   Serial.print("DONE:"); Serial.println(found);
 }
 
+// ---------------- SLCAN (Lawicel ASCII) ----------------
+// A standard serial-CAN protocol so the board drops into the wider tool ecosystem:
+// SavvyCAN (direct), python-can (slcan), and slcand -> SocketCAN -> Wireshark/CANdevStudio.
+// Single channel on Head 1 (the 500k diagnostic bus). Replies: '\r' ok, '\a' (BEL) error.
+// Frames stream out as t<iii><l><dd..> (standard) / T<iiiiiiii><l><dd..> (extended).
+bool slcan_mode = false;
+static bool slcan_open = false;
+static uint32_t slcan_baud = BUS1_BAUD;
+
+static uint32_t slcan_bitrate(char c){
+  switch (c){ case '0':return 10000;  case '1':return 20000;  case '2':return 50000;
+              case '3':return 100000; case '4':return 125000; case '5':return 250000;
+              case '6':return 500000; case '7':return 800000; case '8':return 1000000; }
+  return 0;
+}
+static void slcan_emit(const CAN_message_t& r){
+  if (r.flags.extended){ Serial.print('T'); for (int sh=28; sh>=0; sh-=4) Serial.print((r.id>>sh)&0xF, HEX); }
+  else { Serial.print('t'); Serial.print((r.id>>8)&0xF,HEX); Serial.print((r.id>>4)&0xF,HEX); Serial.print(r.id&0xF,HEX); }
+  Serial.print(r.len & 0xF, HEX);
+  for (int i=0;i<r.len;i++){ if (r.buf[i]<16) Serial.print('0'); Serial.print(r.buf[i],HEX); }
+  Serial.print('\r');
+}
+static bool is_slcan_cmd(const String& s){      // recognise an SLCAN line to auto-enter the mode
+  if (!s.length()) return false;
+  char c=s[0];
+  if (c=='t'||c=='T'||c=='r'||c=='R') return true;
+  if (s.length()==1 && (c=='O'||c=='C'||c=='L'||c=='V'||c=='v'||c=='F'||c=='N')) return true;
+  if (c=='S' && s.length()==2 && s[1]>='0' && s[1]<='8') return true;   // S<bitrate>
+  return false;
+}
+static void handleSLCAN(const String& s){
+  if (!s.length()) return;
+  char cmd=s[0];
+  if (cmd=='S'){ uint32_t b=slcan_bitrate(s.length()>1?s[1]:'?'); if(b){slcan_baud=b; Serial.print('\r');} else Serial.print('\a'); return; }
+  if (cmd=='O'){ Head1.setBaudRate(slcan_baud, TX);          Head1.enableFIFO(); slcan_open=true; Serial.print('\r'); return; }
+  if (cmd=='L'){ Head1.setBaudRate(slcan_baud, LISTEN_ONLY); Head1.enableFIFO(); slcan_open=true; Serial.print('\r'); return; }
+  if (cmd=='C'){ slcan_open=false; Serial.print('\r'); return; }
+  if (cmd=='V'){ Serial.print("V0400\r"); return; }
+  if (cmd=='v'){ Serial.print("v0400\r"); return; }
+  if (cmd=='N'){ Serial.print("NCB01\r"); return; }
+  if (cmd=='F'){ Serial.print("F00\r");   return; }                       // status flags: no errors
+  if (cmd=='Z'||cmd=='z'||cmd=='m'||cmd=='M'){ Serial.print('\r'); return; } // timestamp/filter cmds: accept+ignore (we pass all)
+  if (cmd=='t'){                                                          // tIIILDD..
+    if (s.length()<5){ Serial.print('\a'); return; }
+    uint32_t id=(nib(s[1])<<8)|(nib(s[2])<<4)|nib(s[3]);
+    int dlc=nib(s[4]); if(dlc>8)dlc=8;
+    CAN_message_t m; m.id=id; m.flags.extended=0; m.len=dlc;
+    for (int i=0;i<dlc;i++){ int p=5+i*2; if(p+1>=(int)s.length()){Serial.print('\a');return;} m.buf[i]=(nib(s[p])<<4)|nib(s[p+1]); }
+    Serial.print((slcan_open && Head1.write(m)) ? "z\r" : "\a"); return;
+  }
+  if (cmd=='T'){                                                          // TIIIIIIIILDD..
+    if (s.length()<10){ Serial.print('\a'); return; }
+    uint32_t id=0; for (int i=1;i<=8;i++) id=(id<<4)|nib(s[i]);
+    int dlc=nib(s[9]); if(dlc>8)dlc=8;
+    CAN_message_t m; m.id=id; m.flags.extended=1; m.len=dlc;
+    for (int i=0;i<dlc;i++){ int p=10+i*2; if(p+1>=(int)s.length()){Serial.print('\a');return;} m.buf[i]=(nib(s[p])<<4)|nib(s[p+1]); }
+    Serial.print((slcan_open && Head1.write(m)) ? "Z\r" : "\a"); return;
+  }
+  if (cmd=='r'||cmd=='R'){ Serial.print('\r'); return; }                  // RTR tx: accept (VAG rarely needs it)
+  Serial.print('\a');                                                     // unknown SLCAN cmd
+}
+
 // ---------------- line protocol ----------------
 static int split(const String& s, char sep, String* parts, int maxp){
   int count=0, start=0;
@@ -270,6 +334,7 @@ void handleLine(String line){
   String kw = parts[0]; kw.toUpperCase();
 
   if (kw=="PING"){ Serial.println("PONG"); return; }
+  if (kw=="SLCAN"){ slcan_mode=true; Serial.println("OK:slcan (Lawicel mode on Head 1; reset board to exit)"); return; }
   if (kw=="INFO"){
     Serial.print("CERBERUS:"); Serial.print(CERBERUS_VERSION);
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
@@ -389,8 +454,19 @@ String inbuf;
 void loop(){
   while (Serial.available()){
     char c = Serial.read();
-    if (c=='\n' || c=='\r'){ if (inbuf.length()){ handleLine(inbuf); inbuf=""; } }
+    if (c=='\n' || c=='\r'){
+      if (inbuf.length()){
+        if (slcan_mode)            handleSLCAN(inbuf);                   // already in SLCAN mode
+        else if (is_slcan_cmd(inbuf)) { slcan_mode = true; handleSLCAN(inbuf); }  // auto-enter
+        else                       handleLine(inbuf);                   // native protocol
+        inbuf = "";
+      }
+    }
     else if (inbuf.length() < 1100) inbuf += c;       // room for a full TransferData chunk
   }
-  tp_service();                                       // non-blocking TesterPresent keep-alive
+  if (slcan_mode){                                    // SLCAN: stream RX frames out as t/T lines
+    if (slcan_open){ CAN_message_t r; while (Head1.read(r)) slcan_emit(r); }
+  } else {
+    tp_service();                                     // native: non-blocking TesterPresent keep-alive
+  }
 }
