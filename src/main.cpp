@@ -60,27 +60,59 @@ static int hexBytes(const String& s, uint8_t* out, int maxlen){
 }
 static void printHex(const uint8_t* d,int n){ for(int i=0;i<n;i++){ if(d[i]<16)Serial.print('0'); Serial.print(d[i],HEX);} }
 
-// ---------------- Head 2 always-on background logger ----------------
-// Head 2 is a SECOND SN65HVD230 wired in parallel with Head 1 on OBD 6/14, held in
-// LISTEN_ONLY: it never ACKs or drives, it only records. MON streams every Head-2 frame
-// as  M2:<ms>:<id>:<hex>[:OVR]  continuously — interleaved with normal command replies —
-// so you can run an active UDS/CP exchange on Head 1 and capture the unmasked wire on
-// Head 2 at the same time, from one box. pump_mon() is also called inside the ISO-TP wait
-// loops, so capture keeps flowing DURING a Head-1 transaction (when the CP handshake rides).
+// ---------------- Head 2 always-on background logger (ring-buffered) ----------------
+// Head 2 is a SECOND SN65HVD230 in parallel with Head 1 on OBD 6/14, held LISTEN_ONLY.
+// Capture is decoupled from USB by a big ring buffer in OCRAM: mon_capture() drains the
+// FlexCAN FIFO into the ring (fast, never blocks) and mon_flush() drains the ring to USB
+// only when there's TX room (never blocks). So a USB stall — or a long blocking Head-1
+// transaction — no longer overflows the 256-deep FIFO; the ring (16384 frames / 256 KB)
+// absorbs the burst and drains afterward. Frames stream as M2:<ms>:<id>:<hex>[:OVR].
+// If the ring itself saturates, the newest frame is dropped and counted (MON:stat / MON:off).
+struct MonFrame { uint32_t t; uint16_t id; uint8_t len; uint8_t ovr; uint8_t buf[8]; };  // 16 B
+#define MON_RING 16384                                // 16384 * 16 B = 256 KB (OCRAM)
+DMAMEM static MonFrame mon_ring[MON_RING];
 static bool     mon_on   = false;
 static uint32_t mon_idlo = 0x000, mon_idhi = 0x7FF;
 static uint32_t mon_t0   = 0;
-static void pump_mon(){
+static uint32_t mon_head = 0, mon_tail = 0;           // head = write idx, tail = read idx
+static uint32_t mon_dropped = 0, mon_peak = 0;
+static inline bool     mon_empty(){ return mon_head==mon_tail; }
+static inline bool     mon_full() { return ((mon_head+1)%MON_RING)==mon_tail; }
+static inline uint32_t mon_depth(){ return (mon_head + MON_RING - mon_tail) % MON_RING; }
+
+static void mon_capture(){                            // FIFO -> ring (fast, never blocks)
   if (!mon_on) return;
   CAN_message_t r;
   while (Head2.read(r)){
     if (r.id < mon_idlo || r.id > mon_idhi) continue;
-    Serial.print("M2:"); Serial.print(millis()-mon_t0); Serial.print(':');
-    Serial.print(r.id, HEX); Serial.print(':');
-    printHex(r.buf, r.len);
-    if (r.flags.overrun) Serial.print(":OVR");        // FIFO overran before this frame
-    Serial.println();
+    if (mon_full()){ mon_dropped++; continue; }       // ring saturated -> drop newest + count
+    MonFrame &f = mon_ring[mon_head];
+    f.t = millis()-mon_t0; f.id = (uint16_t)r.id; f.len = r.len; f.ovr = r.flags.overrun;
+    for (int i=0;i<r.len && i<8;i++) f.buf[i]=r.buf[i];
+    mon_head = (mon_head+1)%MON_RING;
   }
+  uint32_t d=mon_depth(); if (d>mon_peak) mon_peak=d;
+}
+
+static void mon_flush(uint32_t maxframes){            // ring -> USB (only when TX has room)
+  uint32_t sent=0;
+  while (!mon_empty() && sent<maxframes){
+    if ((uint32_t)Serial.availableForWrite() < 40) break;  // would block -> stop; ring holds it
+    MonFrame &f = mon_ring[mon_tail];
+    Serial.print("M2:"); Serial.print(f.t); Serial.print(':');
+    Serial.print(f.id, HEX); Serial.print(':');
+    printHex(f.buf, f.len);
+    if (f.ovr) Serial.print(":OVR");
+    Serial.println();
+    mon_tail = (mon_tail+1)%MON_RING;
+    sent++;
+  }
+}
+
+static void pump_mon(){
+  if (!mon_on) return;
+  mon_capture();        // always drain the FIFO into the ring first (the anti-drop guarantee)
+  mon_flush(32);        // then opportunistically push some frames out to USB
 }
 
 // ---------------- ISO-TP ----------------
@@ -390,7 +422,7 @@ void handleLine(String line){
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
     Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
     Serial.print(" tmo="); Serial.print(UDS_TIMEOUT_MS);
-    Serial.print(" respmax=4096"); Serial.println();
+    Serial.print(" respmax=4096"); Serial.print(" monring="); Serial.print(MON_RING); Serial.println();
     return;
   }
   if (kw=="STATS"){
@@ -413,19 +445,33 @@ void handleLine(String line){
     return;
   }
   if (kw=="MON"){
-    // MON:on[:idlo:idhi] | MON:off  — toggle the always-on Head-2 listen-only background
-    // logger. While on, every Head-2 frame streams as  M2:<ms>:<id>:<hex>[:OVR]  (interleaved
-    // with command replies). Head 2 is a passive tap on OBD 6/14 alongside Head 1's active VCI.
-    if (np>=2 && parts[1].equalsIgnoreCase("off")){ mon_on=false; Serial.println("OK:mon-off"); return; }
+    // MON:on[:idlo:idhi] | MON:off | MON:stat — always-on Head-2 ring-buffered logger.
+    // M2:<ms>:<id>:<hex>[:OVR] streams interleaved with command replies; the ring decouples
+    // capture from USB so bursts / blocking Head-1 transactions don't drop frames.
+    if (np>=2 && parts[1].equalsIgnoreCase("off")){
+      mon_on=false;
+      Serial.print("OK:mon-off dropped="); Serial.print(mon_dropped);
+      Serial.print(" peak="); Serial.println(mon_peak);
+      return;
+    }
+    if (np>=2 && parts[1].equalsIgnoreCase("stat")){
+      Serial.print("M2STAT:on="); Serial.print(mon_on?1:0);
+      Serial.print(" depth="); Serial.print(mon_depth());
+      Serial.print(" peak="); Serial.print(mon_peak);
+      Serial.print(" dropped="); Serial.print(mon_dropped);
+      Serial.print(" cap="); Serial.println(MON_RING);
+      return;
+    }
     if (np>=2 && parts[1].equalsIgnoreCase("on")){
       mon_idlo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x000;
       mon_idhi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7FF;
       Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      mon_head=mon_tail=0; mon_dropped=0; mon_peak=0;          // fresh ring per session
       mon_t0 = millis(); mon_on = true;
       Serial.println("OK:mon-on");
       return;
     }
-    Serial.println("ERR:format (MON:on[:idlo:idhi] | MON:off)");
+    Serial.println("ERR:format (MON:on[:idlo:idhi] | MON:off | MON:stat)");
     return;
   }
   if (kw=="SNIFF"){
