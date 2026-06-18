@@ -5,8 +5,8 @@ actual first-light bring-up on a 2013 Audi A6 C7, so the gotchas that cost *us* 
 don't cost *you* any.
 
 > ⚠️ Alpha hardware tool. Head 1 (diagnostics) is validated on a real car. The **write /
-> CP / TC1796-bench / EMU** paths are bench/experimental — don't point write features at a
-> vehicle you can't recover.
+> CP / EMU** paths are bench/experimental — don't point write features at a vehicle you
+> can't recover.
 
 ## 1. Bill of materials
 
@@ -80,7 +80,7 @@ Plug the Teensy into USB — it enumerates as **`USB Serial Device (COMx)`**. Op
 and type:
 
 ```
-INFO   ->  CERBERUS:0.9.0-emu CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384
+INFO   ->  CERBERUS:0.9.1-emu CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384
 PING   ->  PONG
 ```
 
@@ -116,6 +116,6 @@ issue commands on Head 1 or a tester (ODIS / VCDS) runs. A module *answering* is
 First-light on a **2013 Audi A6 C7 (3.0T)**: Head 1 reads live module data through the gateway —
 VIN, part numbers, and a full module map (30 raw `SCAN` hits → 14 real modules) all pulled via
 multi-frame ISO-TP. The dual-head logger firmware is flashed + verified on the board. The
-write / CP / TC1796-bench / EMU paths remain bench-experimental.
+write / CP / EMU paths remain bench-experimental.
 
 GPLv3. Built for owners.

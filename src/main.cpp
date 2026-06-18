@@ -320,9 +320,9 @@ static void do_raw(BUS& bus, uint32_t id, const uint8_t* data, int n){
 
 // Send ONE classic CAN frame in NORMAL (TX) mode, then capture RX frames for waitms ms.
 // The missing primitive: SNIFF is listen-only (can't TX) and RAW is send-only (can't RX).
-// CANX = send-then-listen, which lets the host drive low-level request/response protocols
-// like the TC1796 CAN bootstrap loader (BSL) entirely from a script — no per-tweak reflash.
-// waitms==0 => fire-and-forget (fast streaming, e.g. BSL block upload).
+// CANX = send-then-listen, so the host can drive low-level request/response protocols
+// (bootloaders, raw probing, custom framing) entirely from a script — no per-tweak reflash.
+// waitms==0 => fire-and-forget (fast streaming).
 template <typename BUS>
 static void do_canx(BUS& bus, uint32_t id, const uint8_t* data, int n, uint32_t waitms){
   CAN_message_t m; m.id=id; m.flags.extended=0; m.len=(n>8)?8:n;
