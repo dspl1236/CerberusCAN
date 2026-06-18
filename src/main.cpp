@@ -114,6 +114,7 @@ static uint32_t  oled_last = 0;
 static uint32_t  h2_prev = 0, h1_prev = 0, h2_pk = 1, h1_pk = 1;   // VU auto-scale state
 static uint32_t  h1_cmd   = 0;               // active-command count -> the H1 "our activity" VU bar
 static char      mode_buf[10] = {0};         // last command keyword, flashed in the title
+static const char* cur_mode_name = "VCI";    // VCI | SNIFF | DUAL — steady OLED title + MODE report
 static uint32_t  mode_ts = 0;
 static void set_mode(const char* m){ uint8_t i=0; for(; m[i] && i<9; i++) mode_buf[i]=m[i]; mode_buf[i]=0; mode_ts=millis(); }
 
@@ -157,7 +158,7 @@ static void oled_update(){
   int h1c = (int)((uint64_t)h1d * OLED_CELLS / (h1_pk?h1_pk:1));
 
   // title shows the live MODE (last command, else persistent MON/IDLE) — no version clutter
-  const char* mode = (mode_buf[0] && now-mode_ts < 1500) ? mode_buf : (mon_on ? "MON" : "IDLE");
+  const char* mode = (mode_buf[0] && now-mode_ts < 1500) ? mode_buf : cur_mode_name;
 
   oled.setCursor(0, 0); oled.print("CERBERUS  "); oled.print(mode); oled.clearToEOL();  // yellow band
   oled.setCursor(0, 2); oled.print("tot "); oled.print(mon_total);
@@ -564,9 +565,21 @@ void handleLine(String line){
   if (kw=="UDS"||kw=="CANX"||kw=="RAW"||kw=="SCAN") h1_cmd++; // feeds the H1 "our activity" VU bar
 
   if (kw=="PING"){ Serial.println("PONG"); return; }
+  if (kw=="REBOOT"){   // jump to the HalfKay bootloader so the host can flash (Console "Update firmware")
+    Serial.println("OK:reboot-to-bootloader"); Serial.flush(); delay(40);
+    _reboot_Teensyduino_();
+    return;
+  }
   if (kw=="SLCAN"){ slcan_mode=true; Serial.println("OK:slcan (Lawicel mode on Head 1; reset board to exit)"); return; }
   if (kw=="INFO"){
     Serial.print("CERBERUS:"); Serial.print(CERBERUS_VERSION);
+#if defined(ARDUINO_TEENSY41)
+    Serial.print(" board=T4.1");
+#elif defined(ARDUINO_TEENSY40)
+    Serial.print(" board=T4.0");
+#else
+    Serial.print(" board=T4.x");
+#endif
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
     Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
     Serial.print(" tmo="); Serial.print(UDS_TIMEOUT_MS);
@@ -626,6 +639,33 @@ void handleLine(String line){
     Serial.println("ERR:format (EMU:on:bus:REQ:RESP | EMU:add:PREFIX:RESP | EMU:clear|off|stat)");
     return;
   }
+  if (kw=="MODE"){
+    // MODE:vci|sniff|dual — set both heads' posture in one shot (the high-level convenience over
+    // HEAD2/HEAD1). vci = H1 active VCI + H2 listen-only logger (boot default); sniff = BOTH heads
+    // listen-only + MON on (zero bus footprint — safe to log a live ODIS/dealer session); dual =
+    // both active VCIs. `MODE` alone reports. Steady OLED title reflects it.
+    if (np>=2){
+      String m=parts[1]; m.toLowerCase();
+      if (m=="vci"){
+        Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();
+        Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+        mon_on=false; cur_mode_name="VCI";
+      } else if (m=="sniff"){
+        Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();   // H1 silent too
+        Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+        mon_idlo=0x000; mon_idhi=0x7FF; mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;
+        mon_t0=millis(); mon_on=true; cur_mode_name="SNIFF";
+      } else if (m=="dual"){
+        Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
+        Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();
+        mon_on=false; cur_mode_name="DUAL";
+      } else { Serial.println("ERR:format (MODE:vci|sniff|dual)"); return; }
+      Serial.print("OK:mode="); Serial.println(cur_mode_name);
+      return;
+    }
+    Serial.print("MODE:"); Serial.println(cur_mode_name);
+    return;
+  }
   if (kw=="HEAD2"){
     // HEAD2:active -> Head 2 becomes a 2nd ACTIVE VCI (normal TX/RX, mirrors Head 1) so
     // UDS:2 / RAW:2 / CANX:2 / SCAN:2 actually transmit on it — used to com-test the Head-2
@@ -649,9 +689,9 @@ void handleLine(String line){
     // Factory / bring-up QC — verifies a unit with NO car needed:
     //   1) CAN1 internal loopback  (controller core)
     //   2) CAN2 internal loopback  (controller core)
-    //   3) H1->H2 wire test: Head 1 transmits, Head 2 (LISTEN_ONLY) must hear it -> proves both
-    //      transceivers + the shared CANH/CANL link + the TX/RX orientation. (On a bare bench the
-    //      frames aren't ACKed but a LOM listener still sees each attempt; on a bus the car ACKs.)
+    //   3) H1->H2 wire test: Head 1 transmits, Head 2 receives -> proves both transceivers + the
+    //      shared CANH/CANL link + the TX/RX orientation. Head 2 runs NORMAL (not LOM) so it ACKs
+    //      Head 1's frames itself -> fully self-contained, NO car/other node needed to ACK.
     bool p1=false,p2=false; uint32_t saw=0;
     CAN_message_t r;
     // 1) CAN1 core
@@ -664,9 +704,9 @@ void handleLine(String line){
     { CAN_message_t m; m.id=0x222; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0xA5; Head2.write(m);
       uint32_t t=millis(); while(millis()-t<60){ if(Head2.read(r)&&r.id==0x222){p2=true;break;} } }
     Head2.enableLoopBack(false);
-    // 3) H1 -> H2 over the wire
-    Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();
-    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+    // 3) H1 -> H2 over the wire. Head 2 NORMAL (not LOM) so it ACKs Head 1 -> self-contained.
+    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
+    Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();
     { CAN_message_t m; m.id=0x321; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0x33;
       for(int i=0;i<20;i++){ Head1.write(m);
         uint32_t t=millis(); while(millis()-t<5){ if(Head2.read(r)&&r.id==0x321) saw++; } } }
@@ -679,7 +719,9 @@ void handleLine(String line){
     Serial.print(" h1->h2_wire=");        Serial.print(pw?"PASS":"FAIL");
     Serial.print(" (head2_saw="); Serial.print(saw); Serial.print(")  => ");
     Serial.println((p1&&p2&&pw) ? "UNIT OK"
-                 : (p1&&p2)     ? "controllers OK, H1->H2 wire FAIL (check TX/RX cross + CANH/CANL link)"
+                 : (p1&&p2)     ? "controllers OK; wire test inconclusive (saw=0) — needs a TERMINATED bus + a node: "
+                                  "connect to the vehicle, or a 120R bench jig, then re-run. If it still reads 0 on a "
+                                  "good bus, check the TX/RX cross + CANH/CANL link."
                                 : "CONTROLLER FAIL");
     return;
   }
@@ -834,7 +876,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){

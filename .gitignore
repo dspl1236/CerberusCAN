@@ -10,3 +10,8 @@ __pycache__/
 
 # but DO publish the pre-built firmware
 !firmware/*.hex
+host/build/
+host/dist/
+host/*.spec
+host/cpcap.csv
+host/tools/teensy_loader_cli.exe
