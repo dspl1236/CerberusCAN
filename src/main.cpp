@@ -104,10 +104,16 @@ static void mon_capture(){                            // FIFO -> ring (fast, nev
 // total / fps / dropped / peak. Default geometry 128x64 (the common 0.96" yellow/blue panel:
 // top 16 px yellow = a title band, the rest blue); comment OLED_128x64 for a 0.91/0.92" 128x32.
 #define OLED_128x64
-static uint8_t oled_addr = 0;
+#define OLED_CELLS 12
+static uint8_t   oled_addr = 0;
 SSD1306AsciiWire oled;
-static bool     oled_present = false;
-static uint32_t oled_last = 0, oled_ltot = 0, oled_lms = 0;
+static bool      oled_present = false;
+static uint32_t  oled_last = 0;
+static uint32_t  h2_prev = 0, h1_prev = 0, h2_pk = 1, h1_pk = 1;   // VU auto-scale state
+static uint32_t  h1_cmd   = 0;               // active-command count -> the H1 "our activity" VU bar
+static char      mode_buf[10] = {0};         // last command keyword, flashed in the title
+static uint32_t  mode_ts = 0;
+static void set_mode(const char* m){ uint8_t i=0; for(; m[i] && i<9; i++) mode_buf[i]=m[i]; mode_buf[i]=0; mode_ts=millis(); }
 
 static bool oled_probe(uint8_t a){ Wire.beginTransmission(a); return Wire.endTransmission()==0; }
 
@@ -127,29 +133,36 @@ static void oled_init(){
   oled.clear();
 }
 
+static void oled_bar(uint8_t row, const char* lbl, int cells){
+  if (cells > OLED_CELLS) cells = OLED_CELLS; if (cells < 0) cells = 0;
+  oled.setCursor(0, row); oled.print(lbl); oled.print(" [");
+  for (int i=0;i<OLED_CELLS;i++) oled.print(i<cells ? '#' : ' ');
+  oled.print(']'); oled.clearToEOL();
+}
+
 static void oled_update(){
   if (!oled_present) return;
   uint32_t now = millis();
-  if (now - oled_last < 250) return;                  // ~4 Hz, never per-loop (I2C is blocking)
+  if (now - oled_last < 200) return;                  // 5 Hz, never per-loop (I2C is blocking)
   oled_last = now;
-  uint32_t fps = 0;
-  if (oled_lms && now > oled_lms)
-    fps = (uint32_t)((uint64_t)(mon_total - oled_ltot) * 1000 / (now - oled_lms));
-  oled_ltot = mon_total; oled_lms = now;
 
-  // row 0 = yellow title band on the two-colour panels; rows 2+ = blue (live data)
-  oled.setCursor(0, 0); oled.print("CERBERUS "); oled.print(CERBERUS_VERSION); oled.clearToEOL();
-  if (mon_on){
-    oled.setCursor(0, 2); oled.print("MON  "); oled.print(mon_total);
-                          oled.print("  "); oled.print(fps); oled.print("/s"); oled.clearToEOL();
-    oled.setCursor(0, 3); oled.print("drop "); oled.print(mon_dropped); oled.clearToEOL();
-    oled.setCursor(0, 4); oled.print("peak "); oled.print(mon_peak); oled.clearToEOL();
-  } else {
-    oled.setCursor(0, 2); oled.print("idle"); oled.clearToEOL();
-    oled.setCursor(0, 3); oled.clearToEOL();
-    oled.setCursor(0, 4); oled.clearToEOL();
-  }
-  oled.setCursor(0, 6); oled.print("H1 VCI   H2 LOG"); oled.clearToEOL();
+  // per-tick deltas -> auto-scaled VU bars (peak rises instantly, decays slowly = "breathing")
+  uint32_t h2d = mon_total - h2_prev; h2_prev = mon_total;   // Head 2 = bus frames logged
+  uint32_t h1d = h1_cmd    - h1_prev; h1_prev = h1_cmd;      // Head 1 = our active commands
+  if (h2d > h2_pk) h2_pk = h2d; else if (h2_pk > 1) h2_pk -= (h2_pk>>4)+1;
+  if (h1d > h1_pk) h1_pk = h1d; else if (h1_pk > 1) h1_pk -= (h1_pk>>4)+1;
+  int h2c = (int)((uint64_t)h2d * OLED_CELLS / (h2_pk?h2_pk:1));
+  int h1c = (int)((uint64_t)h1d * OLED_CELLS / (h1_pk?h1_pk:1));
+
+  // title shows the live MODE (last command, else persistent MON/IDLE) — no version clutter
+  const char* mode = (mode_buf[0] && now-mode_ts < 1500) ? mode_buf : (mon_on ? "MON" : "IDLE");
+
+  oled.setCursor(0, 0); oled.print("CERBERUS  "); oled.print(mode); oled.clearToEOL();  // yellow band
+  oled.setCursor(0, 2); oled.print("tot "); oled.print(mon_total);
+                        oled.print(" drp "); oled.print(mon_dropped); oled.clearToEOL();
+  oled.setCursor(0, 3); oled.print("peak "); oled.print(mon_peak); oled.clearToEOL();
+  oled_bar(5, "H1", h1c);     // our command / TX activity
+  oled_bar(6, "H2", h2c);     // bus traffic (logged frames)
 }
 
 static void mon_flush(uint32_t maxframes){            // ring -> USB (only when TX has room)
@@ -472,6 +485,8 @@ void handleLine(String line){
   String parts[6];
   int np = split(line, ':', parts, 6);
   String kw = parts[0]; kw.toUpperCase();
+  set_mode(kw.c_str());                                       // title shows the current command/mode
+  if (kw=="UDS"||kw=="CANX"||kw=="RAW"||kw=="SCAN") h1_cmd++; // feeds the H1 "our activity" VU bar
 
   if (kw=="PING"){ Serial.println("PONG"); return; }
   if (kw=="SLCAN"){ slcan_mode=true; Serial.println("OK:slcan (Lawicel mode on Head 1; reset board to exit)"); return; }
