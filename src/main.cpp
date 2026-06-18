@@ -645,6 +645,44 @@ void handleLine(String line){
     Serial.println("ERR:format (HEAD2:active | HEAD2:lom)");
     return;
   }
+  if (kw=="SELFTEST"){
+    // Factory / bring-up QC — verifies a unit with NO car needed:
+    //   1) CAN1 internal loopback  (controller core)
+    //   2) CAN2 internal loopback  (controller core)
+    //   3) H1->H2 wire test: Head 1 transmits, Head 2 (LISTEN_ONLY) must hear it -> proves both
+    //      transceivers + the shared CANH/CANL link + the TX/RX orientation. (On a bare bench the
+    //      frames aren't ACKed but a LOM listener still sees each attempt; on a bus the car ACKs.)
+    bool p1=false,p2=false; uint32_t saw=0;
+    CAN_message_t r;
+    // 1) CAN1 core
+    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO(); Head1.enableLoopBack(true); delay(5);
+    { CAN_message_t m; m.id=0x111; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0x5A; Head1.write(m);
+      uint32_t t=millis(); while(millis()-t<60){ if(Head1.read(r)&&r.id==0x111){p1=true;break;} } }
+    Head1.enableLoopBack(false);
+    // 2) CAN2 core
+    Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO(); Head2.enableLoopBack(true); delay(5);
+    { CAN_message_t m; m.id=0x222; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0xA5; Head2.write(m);
+      uint32_t t=millis(); while(millis()-t<60){ if(Head2.read(r)&&r.id==0x222){p2=true;break;} } }
+    Head2.enableLoopBack(false);
+    // 3) H1 -> H2 over the wire
+    Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();
+    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+    { CAN_message_t m; m.id=0x321; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0x33;
+      for(int i=0;i<20;i++){ Head1.write(m);
+        uint32_t t=millis(); while(millis()-t<5){ if(Head2.read(r)&&r.id==0x321) saw++; } } }
+    bool pw = (saw>0);
+    // restore: Head 1 active VCI, Head 2 listen-only logger
+    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
+    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO(); mon_on=false;
+    Serial.print("SELFTEST: can1_loop="); Serial.print(p1?"PASS":"FAIL");
+    Serial.print(" can2_loop=");          Serial.print(p2?"PASS":"FAIL");
+    Serial.print(" h1->h2_wire=");        Serial.print(pw?"PASS":"FAIL");
+    Serial.print(" (head2_saw="); Serial.print(saw); Serial.print(")  => ");
+    Serial.println((p1&&p2&&pw) ? "UNIT OK"
+                 : (p1&&p2)     ? "controllers OK, H1->H2 wire FAIL (check TX/RX cross + CANH/CANL link)"
+                                : "CONTROLLER FAIL");
+    return;
+  }
   if (kw=="H2TEST"){
     // Diagnostic: does Head 2's TX *physically* reach the bus? Head 1 listens (LISTEN_ONLY) while
     // Head 2 transmits a marker frame (ID 0x100) 20x. Splits a dead Head 2 into TX-path vs RX-path:
@@ -796,7 +834,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|HEAD2|H2TEST|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
