@@ -105,15 +105,21 @@ GND ─────────────────────────�
                    TX / RX ──[opt. level shift]── Teensy spare UART (~10.4 kbaud)
 ```
 
-**Chip choice — two options:**
-- **`L9637D`** (ST) — the classic dedicated ISO-9141 K-line IC. **5 V logic**, so feed its Vcc from
-  the Teensy's **VUSB** pin (USB 5 V) and put a bidirectional **level shifter** on TX/RX (the Teensy
-  4.1 is *not* 5 V-tolerant). Most documented; clones exist as KKL breakouts.
-- **`MC33660`** (NXP) — ISO K-line interface with a **3.3 V-capable logic supply**: run its logic off
-  the Teensy **3.3 V** and wire TX/RX **straight to the UART — no level shifter, no USB-5 V tap.**
-  The minimal-parts option (verify the logic-Vdd range on the datasheet first).
-- *(A discrete N-FET + pull-up works but skips the protection/slew shaping — not recommended. LIN
-  PHYs share the physical layer but are fiddly on 5-baud-init cars.)*
+**Chip choice — prefer a 3.3 V-logic part so it wires straight to a Teensy UART (no shifter):**
+- **`TJA1021` / `TJA1421`** (NXP LIN) — a LIN PHY pressed into K-line service (same single-wire 12 V
+  physical layer). The **`VIO` pin gives 3.3 V-native logic → straight to the UART, no level shifter,
+  no USB-5 V tap.** Cheap and available. ⚠️ **One check:** the LIN **TXD-dominant timeout** can
+  disable the driver during the **ISO-9141 5-baud init** (the line is held low ~200 ms/bit — which
+  VAG uses a lot, incl. KW1281). Verify the timeout on the datasheet; if it's too short, do the slow
+  init by **bit-banging a side GPIO/FET** onto K-line and hand to the transceiver for the 10.4 kbaud
+  data. Fast-init (ISO 14230) cars are unaffected.
+- **`MC33660`** (NXP) — a *dedicated* ISO K-line interface with a **3.3 V-capable logic supply**: same
+  no-shifter win, and **no LIN dominant-timeout caveat** — cleaner for old 5-baud VAG if you can source it.
+- **`L9637D`** (ST) — the classic dedicated K-line IC, but **5 V logic** → feed Vcc from the Teensy's
+  **VUSB** pin and add a bidirectional **level shifter** (the Teensy 4.1 isn't 5 V-tolerant). Most documented.
+- *(A discrete N-FET + pull-up works but skips protection/slew shaping. **STN1110 / ELM327-class
+  interpreters are the wrong layer** — they abstract the bus to AT-commands + PIDs, which fights
+  Cerberus's raw-access mission; not used here.)*
 
 **Wires:** beyond the CAN heads' 6/14/4, just **OBD 7 (K-line)** + **OBD 16 (+12 V)**, plus TX/RX to
 a free Teensy UART. K-line is *fewer* bus wires than CAN (one, not a pair).
