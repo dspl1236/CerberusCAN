@@ -10,7 +10,7 @@
   losslessly log the wire at the same time, from one plug.</strong>
 </p>
 
-> **Status — v0.8.2, pre-1.0.** Head 1 (active diagnostics) is hardware-confirmed on a
+> **Status — v0.9.0, pre-1.0.** Head 1 (active diagnostics) is hardware-confirmed on a
 > **2013 Audi A6 C7**: reads VIN, part numbers, the gateway part, and maps **30 modules** over
 > J533 via multi-frame ISO-TP. The dual-head logger firmware is flashed + verified on the board.
 > The **write / CP / TC1796 bench** paths are implemented but bench/experimental — not validated
@@ -34,11 +34,10 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
 | **2** | CAN2 | 0 / 1 | **Always-on logger** — a *2nd* `SN65HVD230` paralleled on the **same OBD 6/14**, held LISTEN-ONLY. Captures the bus while Head 1 drives (`MON`). |
 | **3** | CAN3 | 30 / 31 | **Spare** — CAN-FD-capable / bring-your-own-transceiver (FD part, or a `TJA1055T/3` for an LS-FT comfort-bus tap). Stub. |
 
-> **Why Head 2 is on 6/14, not a comfort bus.** The old "Head 2 = 100 k comfort CAN on OBD
-> 3/11" design was dropped in v0.6.0. On gateway cars (incl. the C7) the OBD port is firewalled
-> to the diagnostic CAN, so 3/11 is dead — *and* the gateway routes the comfort/CP traffic onto
-> the 500 k diag bus anyway, where Head 2 now logs it (seat/HVAC decode over VW TP 2.0). A
-> *direct* comfort-bus tap is a future Head-3 plug-in (`TJA1055T/3`). See [docs/HARDWARE.md](docs/HARDWARE.md).
+> **Both heads tap the 500 k diag bus.** On gateway cars (incl. the C7) the OBD port is
+> firewalled to the diagnostic CAN, and the gateway routes the comfort/CP traffic (seat, HVAC)
+> onto that bus over VW TP 2.0 — so Head 2 logs it right there. A *direct* comfort-bus tap is a
+> future Head-3 plug-in (`TJA1055T/3`). See [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Features
 
@@ -56,7 +55,7 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
 ## Flash
 
 ```bash
-# A) no toolchain: open firmware/cerberus-can-0.8.2-teensy41.hex in Teensy Loader
+# A) no toolchain: open firmware/cerberus-can-teensy41.hex in Teensy Loader (INFO shows the version)
 # B) from source (PlatformIO):
 pip install platformio
 python -m platformio run -t upload
@@ -92,6 +91,7 @@ CANX:<bus>:<ID>:<HEX>[:ms]    send one frame then listen ms        (drives the T
 SCAN:<bus>[:lo:hi[:win]]      active responder sweep (TesterPresent)
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
+EMU:on:<bus>:<REQ>:<RESP>     emulate a module (UDS responder)     EMU:add:<prefix>:<resp> rules
 TP:<bus>:<TX>:<ms> | TP:STOP  background TesterPresent keep-alive
 STATS:<bus>                   CAN error counters / bus health
 SLCAN                         enter Lawicel mode on Head 1 (reset to exit)
@@ -118,14 +118,14 @@ mapped and named the whole car off the gateway.
 ## Roadmap
 
 - [x] Head 1 @ 500 k — request-level ISO-TP/UDS read + write
-- [x] Hardware listen-only sniff (LOM) — *v0.4.0*
-- [x] Dual-head: active VCI + always-on logger (`MON`), ring-buffered lossless — *v0.6 / 0.7*
-- [x] SLCAN ecosystem interop — *v0.4.0*
-- [x] TC1796 CAN-BSL Tier-1 — Simos 8.x bench read/write — *v0.5.0*
-- [x] OLED status HUD (mode + VU bars) — *v0.8.x*
+- [x] Hardware listen-only sniff (LOM)
+- [x] Dual-head: active VCI + always-on ring-buffered logger (`MON`)
+- [x] SLCAN ecosystem interop (SavvyCAN / python-can / SocketCAN)
+- [x] TC1796 CAN-BSL — Simos 8.x bench read/write
+- [x] OLED status HUD (mode + VU bars)
 - [x] Simos-Suite drives Cerberus (dual-head driver + CP Capture live view)
 - [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
-- [ ] `EMU` responder mode — fake a module to probe the gateway / CP from the other side
+- [x] `EMU` responder mode — fake a module to probe the gateway / CP from the other side
 - [ ] Tier-2 BSL — on-board PWM + RST for the SBOOT boot-password extraction
 - [ ] On-device SD logging
 

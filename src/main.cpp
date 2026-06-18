@@ -18,6 +18,8 @@
  *   SNIFF:<bus>:<ms>[:idlo:idhi]   passive LISTEN-ONLY dump (no ACK; ms=0=until byte; optional ID range)
  *   MON:on[:idlo:idhi] | MON:off   always-on Head-2 background logger -> M2:<ms>:<id>:<hex> lines
  *                                  (runs concurrently with active Head-1 UDS/CP — capture while you drive)
+ *   EMU:on:bus:REQ:RESP            emulate a module on Head 1 (UDS responder) -> EMURX:/EMUTX:
+ *   EMU:add:PREFIX:RESP            add a rule (request-prefix -> response); EMU:clear|off|stat
  *   STATS:<bus>                    CAN controller health: error counters / fault state / RX overrun
  *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
  *   INFO                           firmware + bus config
@@ -407,6 +409,74 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
   Serial.print("DONE:"); Serial.println(found);
 }
 
+// ---------------- EMU: module emulation (UDS responder) ----------------
+// Cerberus answers UDS requests on emu_req from emu_resp, to probe how a tester / the J533
+// gateway reacts to a FAKE module. Rules map a request *prefix* -> a canned response:
+// "10" matches any session-control request, "22F190" a ReadDID F190, "27" any SecurityAccess.
+// First matching rule wins; unmatched requests get a negative response (7F <sid> 11) by default.
+// Reassembles multi-frame requests (sends flow control) and multi-frame responses (isotp_send).
+// Runs on Head 1 (it must ACK + transmit) -> a BENCH play (gateway + fake module), NOT a tap
+// alongside the real module. Each handled exchange is echoed to the host as EMURX:/EMUTX:.
+struct EmuRule { uint8_t plen; uint8_t rlen; uint8_t prefix[8]; uint8_t resp[64]; };
+#define EMU_RULES 24
+static EmuRule  emu_rules[EMU_RULES];
+static int      emu_nrules = 0;
+static bool     emu_on  = false;
+static uint32_t emu_req = 0, emu_resp = 0, emu_hits = 0;
+
+// Receive a full ISO-TP request addressed to emu_req on Head 1. Returns length, or 0 if none ready.
+static int emu_recv(uint8_t* out, int maxlen){
+  CAN_message_t r;
+  if (!Head1.read(r) || r.id != emu_req) return 0;
+  uint8_t pci = r.buf[0]>>4;
+  if (pci==0){                                       // single frame
+    int n = r.buf[0]&0x0F; if (n>maxlen) n=maxlen;
+    for (int i=0;i<n;i++) out[i]=r.buf[1+i];
+    return n;
+  }
+  if (pci==1){                                       // first frame -> send CTS, collect CFs
+    int total=((r.buf[0]&0x0F)<<8)|r.buf[1]; if (total>maxlen) total=maxlen;
+    int got=0; for (int i=0;i<6 && got<total;i++) out[got++]=r.buf[2+i];
+    CAN_message_t fc; fc.id=emu_resp; fc.flags.extended=0; fc.len=8;
+    for (int i=0;i<8;i++) fc.buf[i]=PAD_BYTE;
+    fc.buf[0]=0x30; fc.buf[1]=0; fc.buf[2]=0;         // CTS, BS=0, STmin=0
+    Head1.write(fc);
+    uint32_t dl=millis()+1000;
+    while (got<total && (int32_t)(dl-millis())>0){
+      pump_mon();                                     // keep the Head-2 logger draining
+      CAN_message_t c;
+      if (Head1.read(c) && c.id==emu_req && (c.buf[0]>>4)==2){
+        for (int i=0;i<7 && got<total;i++) out[got++]=c.buf[1+i];
+        dl=millis()+1000;
+      }
+    }
+    return got;
+  }
+  return 0;                                           // stray FC/CF
+}
+
+static void emu_service(){
+  if (!emu_on) return;
+  static uint8_t req[64];
+  int n = emu_recv(req, sizeof(req));
+  if (n<=0) return;
+  emu_hits++;
+  Serial.print("EMURX:"); printHex(req, n); Serial.println();
+  for (int i=0;i<emu_nrules;i++){
+    EmuRule& rl = emu_rules[i];
+    if (n < rl.plen) continue;
+    bool m=true; for (int j=0;j<rl.plen;j++) if (req[j]!=rl.prefix[j]){ m=false; break; }
+    if (m){
+      Serial.print("EMUTX:"); printHex(rl.resp, rl.rlen); Serial.println();
+      isotp_send(Head1, emu_resp, emu_req, rl.resp, rl.rlen);
+      return;
+    }
+  }
+  uint8_t neg[3] = { 0x7F, req[0], 0x11 };            // default: serviceNotSupported
+  Serial.print("EMUTX:"); printHex(neg, 3); Serial.println();
+  isotp_send(Head1, emu_resp, emu_req, neg, 3);
+}
+
 // ---------------- SLCAN (Lawicel ASCII) ----------------
 // A standard serial-CAN protocol so the board drops into the wider tool ecosystem:
 // SavvyCAN (direct), python-can (slcan), and slcand -> SocketCAN -> Wireshark/CANdevStudio.
@@ -515,6 +585,40 @@ void handleLine(String line){
     Serial.print(" frm="); Serial.print(e.FRM_ERR);
     Serial.print(" stf="); Serial.print(e.STF_ERR);
     Serial.print(" esr1=0x"); Serial.println(e.ESR1, HEX);
+    return;
+  }
+  if (kw=="EMU"){
+    // EMU:on:bus:REQ:RESP | EMU:add:PREFIXHEX:RESPHEX | EMU:clear | EMU:off | EMU:stat
+    // Emulate a module on Head 1: answer UDS on REQ id from RESP id by request-prefix rules.
+    if (np>=2 && parts[1].equalsIgnoreCase("off")){ emu_on=false; Serial.println("OK:emu-off"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("clear")){ emu_nrules=0; Serial.println("OK:emu-clear"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("stat")){
+      Serial.print("EMUSTAT:on="); Serial.print(emu_on?1:0);
+      Serial.print(" req="); Serial.print(emu_req,HEX);
+      Serial.print(" resp="); Serial.print(emu_resp,HEX);
+      Serial.print(" rules="); Serial.print(emu_nrules);
+      Serial.print(" hits="); Serial.println(emu_hits);
+      return;
+    }
+    if (np>=4 && parts[1].equalsIgnoreCase("add")){
+      if (emu_nrules>=EMU_RULES){ Serial.println("ERR:emu-rules-full"); return; }
+      EmuRule& rl = emu_rules[emu_nrules];
+      int pl  = hexBytes(parts[2], rl.prefix, sizeof(rl.prefix));
+      int rln = hexBytes(parts[3], rl.resp,   sizeof(rl.resp));
+      if (pl<=0 || rln<=0){ Serial.println("ERR:hex (prefix<=8B / resp<=64B)"); return; }
+      rl.plen=pl; rl.rlen=rln; emu_nrules++;
+      Serial.print("OK:emu-rule "); Serial.println(emu_nrules);
+      return;
+    }
+    if (np>=5 && parts[1].equalsIgnoreCase("on")){
+      emu_req  = strtoul(parts[3].c_str(),nullptr,16);
+      emu_resp = strtoul(parts[4].c_str(),nullptr,16);
+      emu_hits = 0; emu_on = true;
+      Serial.print("OK:emu-on req="); Serial.print(emu_req,HEX);
+      Serial.print(" resp="); Serial.println(emu_resp,HEX);
+      return;
+    }
+    Serial.println("ERR:format (EMU:on:bus:REQ:RESP | EMU:add:PREFIX:RESP | EMU:clear|off|stat)");
     return;
   }
   if (kw=="MON"){
@@ -641,7 +745,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
@@ -669,6 +773,7 @@ void loop(){
     if (slcan_open){ CAN_message_t r; while (Head1.read(r)) slcan_emit(r); }
   } else {
     pump_mon();                                       // always-on Head-2 background logger
+    emu_service();                                    // module emulation responder (Head 1)
     tp_service();                                     // native: non-blocking TesterPresent keep-alive
   }
   oled_update();                                      // throttled OLED HUD (no-op if no panel)
