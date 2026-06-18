@@ -40,6 +40,9 @@
  * GPLv3. github.com/dspl1236/CerberusCAN
  */
 #include <FlexCAN_T4.h>
+#include <Wire.h>
+#include <SSD1306Ascii.h>
+#include <SSD1306AsciiWire.h>
 #include "cerberus_config.h"
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1;   // diagnostic, 500k  (OBD 6/14)
@@ -75,7 +78,7 @@ static bool     mon_on   = false;
 static uint32_t mon_idlo = 0x000, mon_idhi = 0x7FF;
 static uint32_t mon_t0   = 0;
 static uint32_t mon_head = 0, mon_tail = 0;           // head = write idx, tail = read idx
-static uint32_t mon_dropped = 0, mon_peak = 0;
+static uint32_t mon_dropped = 0, mon_peak = 0, mon_total = 0;
 static inline bool     mon_empty(){ return mon_head==mon_tail; }
 static inline bool     mon_full() { return ((mon_head+1)%MON_RING)==mon_tail; }
 static inline uint32_t mon_depth(){ return (mon_head + MON_RING - mon_tail) % MON_RING; }
@@ -89,9 +92,59 @@ static void mon_capture(){                            // FIFO -> ring (fast, nev
     MonFrame &f = mon_ring[mon_head];
     f.t = millis()-mon_t0; f.id = (uint16_t)r.id; f.len = r.len; f.ovr = r.flags.overrun;
     for (int i=0;i<r.len && i<8;i++) f.buf[i]=r.buf[i];
-    mon_head = (mon_head+1)%MON_RING;
+    mon_head = (mon_head+1)%MON_RING; mon_total++;
   }
   uint32_t d=mon_depth(); if (d>mon_peak) mon_peak=d;
+}
+
+// ---------------- optional 0.91/0.92" SSD1306 OLED status HUD ----------------
+// Auto-detected on I2C0 (pin 18 SDA / 19 SCL) at 0x3C. No panel -> the probe NAKs and
+// every line below is skipped; the firmware runs identically. With a MON capture live it
+// shows total / frames-per-sec / dropped / peak so you can eyeball the board's health
+// without a laptop. Default geometry 128x32 (common 0.91/0.92"); define OLED_128x64 for a 0.96".
+#define OLED_ADDR 0x3C
+//#define OLED_128x64
+SSD1306AsciiWire oled;
+static bool     oled_present = false;
+static uint32_t oled_last = 0, oled_ltot = 0, oled_lms = 0;
+
+static void oled_init(){
+  Wire.begin();
+  Wire.setClock(400000);
+  Wire.beginTransmission(OLED_ADDR);
+  if (Wire.endTransmission() != 0) return;            // no panel -> stay disabled
+  oled_present = true;
+#ifdef OLED_128x64
+  oled.begin(&Adafruit128x64, OLED_ADDR);
+#else
+  oled.begin(&Adafruit128x32, OLED_ADDR);
+#endif
+  oled.setFont(System5x7);
+  oled.clear();
+  oled.print("CERBERUS\n"); oled.print(CERBERUS_VERSION); oled.print("\nready");
+}
+
+static void oled_update(){
+  if (!oled_present) return;
+  uint32_t now = millis();
+  if (now - oled_last < 250) return;                  // ~4 Hz, never per-loop (I2C is blocking)
+  oled_last = now;
+  uint32_t fps = 0;
+  if (oled_lms && now > oled_lms)
+    fps = (uint32_t)((uint64_t)(mon_total - oled_ltot) * 1000 / (now - oled_lms));
+  oled_ltot = mon_total; oled_lms = now;
+
+  oled.setCursor(0, 0); oled.print("CERBERUS "); oled.print(CERBERUS_VERSION); oled.clearToEOL();
+  if (mon_on){
+    oled.setCursor(0, 1); oled.print("MON "); oled.print(mon_total);
+                          oled.print(" "); oled.print(fps); oled.print("/s"); oled.clearToEOL();
+    oled.setCursor(0, 2); oled.print("drp "); oled.print(mon_dropped);
+                          oled.print(" pk "); oled.print(mon_peak); oled.clearToEOL();
+  } else {
+    oled.setCursor(0, 1); oled.print("idle"); oled.clearToEOL();
+    oled.setCursor(0, 2); oled.print("H2 logger off"); oled.clearToEOL();
+  }
+  oled.setCursor(0, 3); oled.print("H1 VCI  H2 LOG"); oled.clearToEOL();
 }
 
 static void mon_flush(uint32_t maxframes){            // ring -> USB (only when TX has room)
@@ -459,6 +512,7 @@ void handleLine(String line){
       Serial.print(" depth="); Serial.print(mon_depth());
       Serial.print(" peak="); Serial.print(mon_peak);
       Serial.print(" dropped="); Serial.print(mon_dropped);
+      Serial.print(" total="); Serial.print(mon_total);
       Serial.print(" cap="); Serial.println(MON_RING);
       return;
     }
@@ -466,7 +520,7 @@ void handleLine(String line){
       mon_idlo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x000;
       mon_idhi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7FF;
       Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
-      mon_head=mon_tail=0; mon_dropped=0; mon_peak=0;          // fresh ring per session
+      mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;   // fresh ring per session
       mon_t0 = millis(); mon_on = true;
       Serial.println("OK:mon-on");
       return;
@@ -574,6 +628,7 @@ void setup(){
   Serial.begin(115200);
   Head1.begin(); Head1.setBaudRate(BUS1_BAUD); Head1.setMaxMB(16); Head1.enableFIFO();
   Head2.begin(); Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.setMaxMB(16); Head2.enableFIFO();
+  oled_init();
 }
 
 String inbuf;
@@ -596,4 +651,5 @@ void loop(){
     pump_mon();                                       // always-on Head-2 background logger
     tp_service();                                     // native: non-blocking TesterPresent keep-alive
   }
+  oled_update();                                      // throttled OLED HUD (no-op if no panel)
 }
