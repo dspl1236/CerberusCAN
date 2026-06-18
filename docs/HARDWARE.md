@@ -90,7 +90,34 @@ bus, not the OBD port): car awake, back-probe the pair vs. ground —
 ## Future: K-line / KWP2000 for pre-CAN cars
 
 Older VAG cars (roughly pre-2004) speak **KWP2000 over K-line** (ISO 9141 / ISO 14230) on OBD
-pin **7**, not CAN. That's a future Cerberus interface — and unlike the USB-powered CAN heads it
-**needs the car's 12 V** (OBD pin 16), because K-line idles high at battery voltage. It'd take a
-K-line transceiver (e.g. `L9637D`, or a MOSFET + pull-up to 12 V) bridging OBD 7 to one of the
-Teensy's spare UARTs at ~10.4 kbaud, with the 12 V regulated down for the chip. On the roadmap.
+pin **7** — a single-wire 12 V bus, not CAN. Planned as a 4th interface; here's the design.
+
+**The Teensy stays USB-powered — no DC-DC.** The only thing that touches the car's 12 V is the
+K-line transceiver's *line side* (the bus idles high at battery voltage). That's one wire from
+OBD pin 16 to the chip, not a converter.
+
+```
+OBD 7  (K-line) ───────────────┐
+OBD 16 (+12 V) ─┬─[~510 Ω]──────┤   ← pull-up (recessive = 12 V)
+                └───────────────┤   K-line transceiver  (line/Vs side off OBD 12 V)
+ logic supply ──────────────────┤   (5 V or 3.3 V — see chip choice)
+GND ────────────────────────────┘
+                   TX / RX ──[opt. level shift]── Teensy spare UART (~10.4 kbaud)
+```
+
+**Chip choice — two options:**
+- **`L9637D`** (ST) — the classic dedicated ISO-9141 K-line IC. **5 V logic**, so feed its Vcc from
+  the Teensy's **VUSB** pin (USB 5 V) and put a bidirectional **level shifter** on TX/RX (the Teensy
+  4.1 is *not* 5 V-tolerant). Most documented; clones exist as KKL breakouts.
+- **`MC33660`** (NXP) — ISO K-line interface with a **3.3 V-capable logic supply**: run its logic off
+  the Teensy **3.3 V** and wire TX/RX **straight to the UART — no level shifter, no USB-5 V tap.**
+  The minimal-parts option (verify the logic-Vdd range on the datasheet first).
+- *(A discrete N-FET + pull-up works but skips the protection/slew shaping — not recommended. LIN
+  PHYs share the physical layer but are fiddly on 5-baud-init cars.)*
+
+**Wires:** beyond the CAN heads' 6/14/4, just **OBD 7 (K-line)** + **OBD 16 (+12 V)**, plus TX/RX to
+a free Teensy UART. K-line is *fewer* bus wires than CAN (one, not a pair).
+
+**No battery-drain concern:** it's a plug-in diagnostic tool on USB power — unplug when done — and
+K-line only works ignition-on anyway (the ECUs are asleep otherwise), so no sleep/auto-shutoff
+logic is needed. Pin 16 (the only standard OBD power) being always-on is fine here.
