@@ -86,3 +86,11 @@ bus, not the OBD port): car awake, back-probe the pair vs. ground —
 > ([Ross-Tech](https://forums.ross-tech.com/index.php?threads/18385/): the OBD CAN is "a
 > dedicated diagnostic bus … separated from the car's internal CAN buses by gateway"). A direct
 > comfort tap means an *internal* bus, not 3/11.
+
+## Future: K-line / KWP2000 for pre-CAN cars
+
+Older VAG cars (roughly pre-2004) speak **KWP2000 over K-line** (ISO 9141 / ISO 14230) on OBD
+pin **7**, not CAN. That's a future Cerberus interface — and unlike the USB-powered CAN heads it
+**needs the car's 12 V** (OBD pin 16), because K-line idles high at battery voltage. It'd take a
+K-line transceiver (e.g. `L9637D`, or a MOSFET + pull-up to 12 V) bridging OBD 7 to one of the
+Teensy's spare UARTs at ~10.4 kbaud, with the 12 V regulated down for the chip. On the roadmap.

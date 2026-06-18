@@ -10,7 +10,7 @@
   losslessly log the wire at the same time, from one plug.</strong>
 </p>
 
-> **Status — v0.9.0, pre-1.0.** Head 1 (active diagnostics) is hardware-confirmed on a
+> **Status — v0.9.1, pre-1.0.** Head 1 (active diagnostics) is hardware-confirmed on a
 > **2013 Audi A6 C7**: reads VIN, part numbers, the gateway part, and maps **30 modules** over
 > J533 via multi-frame ISO-TP. The dual-head logger firmware is flashed + verified on the board.
 > The **write / CP / TC1796 bench** paths are implemented but bench/experimental — not validated
@@ -48,8 +48,8 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
   a **256 KB OCRAM ring buffer** so a USB stall or a long blocking transaction never drops frames
   (`MON:stat` reports peak/dropped).
 - **SLCAN (Lawicel) mode** — drops into the wider ecosystem: SavvyCAN, python-can, `slcand`→SocketCAN.
-- **TC1796 CAN-BSL bench read/write** for **Simos 8.x** ECUs (`host/tc1796_bsl.py`) — the engine
-  ECU that can't be flashed in-car. See [docs/tc1796-bsl-cerberus-port.md](docs/tc1796-bsl-cerberus-port.md).
+- **`EMU` responder mode** — emulate a module (UDS server with rule-matched responses) to probe how
+  J533 / a tester reacts. Bench play; needs a 2nd node to drive it.
 - **Optional SSD1306 OLED HUD** (auto-detected) — live **mode** title + per-head **VU bars**.
 
 ## Flash
@@ -87,7 +87,7 @@ ASCII, one command per line:
 <TX>:<RX>:<HEX>               UDS on Head 1 (shorthand)            710:77A:2200BE
 UDS:<bus>:<TX>:<RX>:<HEX>     full ISO-TP UDS on bus 1|2           UDS:1:710:77A:2E00BE…
 RAW:<bus>:<ID>:<HEX>          send ONE classic frame (no ISO-TP)
-CANX:<bus>:<ID>:<HEX>[:ms]    send one frame then listen ms        (drives the TC1796 BSL)
+CANX:<bus>:<ID>:<HEX>[:ms]    send one frame then listen ms        (low-level send-then-listen)
 SCAN:<bus>[:lo:hi[:win]]      active responder sweep (TesterPresent)
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
@@ -105,8 +105,6 @@ INFO  /  PING
 - **`cerberus_sniff.py`** — live `SNIFF`/`MON` capture, per-ID summary, CSV out.
 - **`cerberus_decode.py`** — turn a capture into labeled UDS/KWP exchanges (ISO-TP **+ VW TP 2.0**),
   flagging the CP-relevant services (TrainICA, `0x00BE` IKA write, SecurityAccess).
-- **`tc1796_bsl.py`** — TC1796 CAN-BSL Tier-1 driver (Simos 8.x bench read/write); `--selftest` runs
-  offline.
 - **`cerberus_probe.py`** — Experiment 1: reads `0x00BE` across J533/J255/J136/J285 (VIN-bound vs
   module-bound verdict).
 - **`cerberus_write.py`** — careful generic UDS write: read-before → confirm → `2E` → read-back, `--dry-run`.
@@ -121,12 +119,11 @@ mapped and named the whole car off the gateway.
 - [x] Hardware listen-only sniff (LOM)
 - [x] Dual-head: active VCI + always-on ring-buffered logger (`MON`)
 - [x] SLCAN ecosystem interop (SavvyCAN / python-can / SocketCAN)
-- [x] TC1796 CAN-BSL — Simos 8.x bench read/write
 - [x] OLED status HUD (mode + VU bars)
 - [x] Simos-Suite drives Cerberus (dual-head driver + CP Capture live view)
 - [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
 - [x] `EMU` responder mode — fake a module to probe the gateway / CP from the other side
-- [ ] Tier-2 BSL — on-board PWM + RST for the SBOOT boot-password extraction
+- [ ] K-line / KWP2000 interface for older (pre-CAN) cars — OBD-12 V powered + a K-line transceiver
 - [ ] On-device SD logging
 
 ## Related
