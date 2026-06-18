@@ -97,31 +97,34 @@ static void mon_capture(){                            // FIFO -> ring (fast, nev
   uint32_t d=mon_depth(); if (d>mon_peak) mon_peak=d;
 }
 
-// ---------------- optional 0.91/0.92" SSD1306 OLED status HUD ----------------
-// Auto-detected on I2C0 (pin 18 SDA / 19 SCL) at 0x3C. No panel -> the probe NAKs and
-// every line below is skipped; the firmware runs identically. With a MON capture live it
-// shows total / frames-per-sec / dropped / peak so you can eyeball the board's health
-// without a laptop. Default geometry 128x32 (common 0.91/0.92"); define OLED_128x64 for a 0.96".
-#define OLED_ADDR 0x3C
-//#define OLED_128x64
+// ---------------- optional SSD1306 OLED status HUD ----------------
+// Auto-detected on I2C0 (pin 18 SDA / 19 SCL), probing 0x3C then 0x3D (note: many boards
+// silk-print 0x78, which is just the 8-bit form of 0x3C). No panel -> the probe NAKs and every
+// OLED line is skipped, so the firmware runs identically with or without it. Live MON shows
+// total / fps / dropped / peak. Default geometry 128x64 (the common 0.96" yellow/blue panel:
+// top 16 px yellow = a title band, the rest blue); comment OLED_128x64 for a 0.91/0.92" 128x32.
+#define OLED_128x64
+static uint8_t oled_addr = 0;
 SSD1306AsciiWire oled;
 static bool     oled_present = false;
 static uint32_t oled_last = 0, oled_ltot = 0, oled_lms = 0;
 
+static bool oled_probe(uint8_t a){ Wire.beginTransmission(a); return Wire.endTransmission()==0; }
+
 static void oled_init(){
   Wire.begin();
   Wire.setClock(400000);
-  Wire.beginTransmission(OLED_ADDR);
-  if (Wire.endTransmission() != 0) return;            // no panel -> stay disabled
+  if      (oled_probe(0x3C)) oled_addr = 0x3C;
+  else if (oled_probe(0x3D)) oled_addr = 0x3D;
+  else return;                                         // no panel -> stay disabled
   oled_present = true;
 #ifdef OLED_128x64
-  oled.begin(&Adafruit128x64, OLED_ADDR);
+  oled.begin(&Adafruit128x64, oled_addr);
 #else
-  oled.begin(&Adafruit128x32, OLED_ADDR);
+  oled.begin(&Adafruit128x32, oled_addr);
 #endif
   oled.setFont(System5x7);
   oled.clear();
-  oled.print("CERBERUS\n"); oled.print(CERBERUS_VERSION); oled.print("\nready");
 }
 
 static void oled_update(){
@@ -134,17 +137,19 @@ static void oled_update(){
     fps = (uint32_t)((uint64_t)(mon_total - oled_ltot) * 1000 / (now - oled_lms));
   oled_ltot = mon_total; oled_lms = now;
 
+  // row 0 = yellow title band on the two-colour panels; rows 2+ = blue (live data)
   oled.setCursor(0, 0); oled.print("CERBERUS "); oled.print(CERBERUS_VERSION); oled.clearToEOL();
   if (mon_on){
-    oled.setCursor(0, 1); oled.print("MON "); oled.print(mon_total);
-                          oled.print(" "); oled.print(fps); oled.print("/s"); oled.clearToEOL();
-    oled.setCursor(0, 2); oled.print("drp "); oled.print(mon_dropped);
-                          oled.print(" pk "); oled.print(mon_peak); oled.clearToEOL();
+    oled.setCursor(0, 2); oled.print("MON  "); oled.print(mon_total);
+                          oled.print("  "); oled.print(fps); oled.print("/s"); oled.clearToEOL();
+    oled.setCursor(0, 3); oled.print("drop "); oled.print(mon_dropped); oled.clearToEOL();
+    oled.setCursor(0, 4); oled.print("peak "); oled.print(mon_peak); oled.clearToEOL();
   } else {
-    oled.setCursor(0, 1); oled.print("idle"); oled.clearToEOL();
-    oled.setCursor(0, 2); oled.print("H2 logger off"); oled.clearToEOL();
+    oled.setCursor(0, 2); oled.print("idle"); oled.clearToEOL();
+    oled.setCursor(0, 3); oled.clearToEOL();
+    oled.setCursor(0, 4); oled.clearToEOL();
   }
-  oled.setCursor(0, 3); oled.print("H1 VCI  H2 LOG"); oled.clearToEOL();
+  oled.setCursor(0, 6); oled.print("H1 VCI   H2 LOG"); oled.clearToEOL();
 }
 
 static void mon_flush(uint32_t maxframes){            // ring -> USB (only when TX has room)
