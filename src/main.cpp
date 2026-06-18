@@ -48,7 +48,7 @@
 #include "cerberus_config.h"
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1;   // diagnostic, 500k  (OBD 6/14)
-FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2;   // comfort,    100k  (OBD 3/11)
+FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2;   // 2nd HVD230 on the SAME diag bus, 500k (OBD 6/14) — listen-only logger
 // FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> Head3;  // CAN-FD (pins 30/31), classic-CAN C7 never uses it.
 
 // ---------------- hex helpers ----------------
@@ -502,7 +502,12 @@ static void slcan_emit(const CAN_message_t& r){
 static bool is_slcan_cmd(const String& s){      // recognise an SLCAN line to auto-enter the mode
   if (!s.length()) return false;
   char c=s[0];
-  if (c=='t'||c=='T'||c=='r'||c=='R') return true;
+  auto ishex=[](char x){ return (x>='0'&&x<='9')||(x>='a'&&x<='f')||(x>='A'&&x<='F'); };
+  // Data/remote frames must carry real hex ID+len digits, else text commands that merely START
+  // with t/T/r/R (TP, TX:, RAW:) would be mistaken for SLCAN and silently flip the board into
+  // SLCAN mode (recoverable only by reset). t/r = 3-hex ID + len ; T/R = 8-hex ID + len.
+  if (c=='t'||c=='r'){ if (s.length()<5)  return false; for(int i=1;i<=4;i++) if(!ishex(s[i])) return false; return true; }
+  if (c=='T'||c=='R'){ if (s.length()<10) return false; for(int i=1;i<=9;i++) if(!ishex(s[i])) return false; return true; }
   if (s.length()==1 && (c=='O'||c=='C'||c=='L'||c=='V'||c=='v'||c=='F'||c=='N')) return true;
   if (c=='S' && s.length()==2 && s[1]>='0' && s[1]<='8') return true;   // S<bitrate>
   return false;
@@ -619,6 +624,52 @@ void handleLine(String line){
       return;
     }
     Serial.println("ERR:format (EMU:on:bus:REQ:RESP | EMU:add:PREFIX:RESP | EMU:clear|off|stat)");
+    return;
+  }
+  if (kw=="HEAD2"){
+    // HEAD2:active -> Head 2 becomes a 2nd ACTIVE VCI (normal TX/RX, mirrors Head 1) so
+    // UDS:2 / RAW:2 / CANX:2 / SCAN:2 actually transmit on it — used to com-test the Head-2
+    // transceiver against the live bus. HEAD2:lom -> restore listen-only (the MON logger role).
+    // MON:on also forces LOM. Default at boot is LOM.
+    if (np>=2 && parts[1].equalsIgnoreCase("active")){
+      mon_on=false;
+      Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();          // normal mode = full TX+RX
+      Serial.println("OK:head2-active (TX) — UDS:2/RAW:2/CANX:2/SCAN:2 now drive Head 2");
+      return;
+    }
+    if (np>=2 && parts[1].equalsIgnoreCase("lom")){
+      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      Serial.println("OK:head2-lom (listen-only logger)");
+      return;
+    }
+    Serial.println("ERR:format (HEAD2:active | HEAD2:lom)");
+    return;
+  }
+  if (kw=="H2TEST"){
+    // Diagnostic: does Head 2's TX *physically* reach the bus? Head 1 listens (LISTEN_ONLY) while
+    // Head 2 transmits a marker frame (ID 0x100) 20x. Splits a dead Head 2 into TX-path vs RX-path:
+    //   head1_saw>0  -> Head-2 TX reaches the wire (TX/power/Rs/CTX ok); chase RX (CRX->pin0).
+    //   head1_saw==0 -> Head-2 TX never hits the wire (power / Rs-standby / CTX->pin1 / transceiver).
+    // Needs another node on the bus to ACK (the car's gateway does). Restores both heads after.
+    CAN_message_t m; m.id=0x100; m.len=8; for (int i=0;i<8;i++) m.buf[i]=0xA5;
+    Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();
+    Head2.setBaudRate(BUS2_BAUD);              Head2.enableFIFO();   // Head 2 active TX
+    uint32_t seen=0, sent=0;
+    for (int i=0;i<20;i++){
+      if (Head2.write(m)) sent++;
+      uint32_t t=millis();
+      while (millis()-t < 15){ CAN_message_t r; if (Head1.read(r) && r.id==0x100) seen++; }
+    }
+    CAN_error_t e2; Head2.error(e2,false);
+    Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();   // restore active VCI
+    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();   // restore logger
+    mon_on=false;
+    Serial.print("H2TEST: head2_queued="); Serial.print(sent);
+    Serial.print(" head1_saw="); Serial.print(seen);
+    Serial.print(" head2_txerr="); Serial.println(e2.TX_ERR_COUNTER);
+    Serial.println(seen>0
+      ? "  => Head-2 TX REACHES the bus (TX path OK) -> RX is the break: chase CRX->pin0"
+      : "  => Head-2 TX does NOT reach the bus (TX path dead): power / Rs->GND / CTX->pin1 / transceiver");
     return;
   }
   if (kw=="MON"){
@@ -745,7 +796,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|SCAN|SNIFF|MON|HEAD2|H2TEST|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
