@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.9.6"
+#define CERBERUS_VERSION "0.9.7"
 
 // ---- Bus baud rates ----
 #define BUS1_BAUD   500000   // Head 1: active VCI on the Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
@@ -16,7 +16,9 @@
 #define PAD_BYTE        0x00 // frame padding (some VAG modules prefer 0xAA/0xCC — change if fussy)
 #define UDS_TIMEOUT_MS  6000 // per-frame response / flow-control window (VAG gateways can take ~5 s on CP DIDs like 0x00BE — keep margin)
 
-// ---- Teensy 4.1 FlexCAN pin map (fixed by the i.MX RT1062 mux) ----
-//   Head 1  CAN1: TX 22, RX 23
-//   Head 2  CAN2: TX  1, RX  0
-//   Head 3  CAN3: TX 31, RX 30   <- CAN-FD capable
+// ---- Teensy pin map ----
+//   Head 1  CAN1:    TX 22, RX 23   active VCI (diag bus, 500k)
+//   Head 2  CAN2:    TX  1, RX  0   listen-only logger (2nd HVD230 on 6/14)
+//   Head 3  Serial2: TX  8, RX  7   K-line / KWP2000 for pre-CAN VAG, via a K-line transceiver on OBD 7
+//                                   (repurposed from the CAN3 30/31 spare; K-line is UART, not CAN)
+//   OLED I2C0: SDA 18, SCL 19 (optional HUD)
