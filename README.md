@@ -24,8 +24,9 @@ Three independent FlexCAN controllers let it do what a normal single-channel ada
 **run an active UDS/CP exchange on one head while losslessly logging the unmasked wire on a
 second**, so you can capture a Component-Protection handshake *as you drive it*.
 
-> Three heads guarding the gate — the gate being VAG's gateway (J533) and everything it
-> hides behind Component Protection.
+> **Three heads guarding the gate** — the gate being VAG's gateway (J533) and everything it
+> hides behind Component Protection. Cerberus is the three-headed guardian of the gate; its
+> two-headed brother **Orthrus** (Teensy 4.0) is the compact watch-dog. See **[the lore](docs/LORE.md)**.
 
 ## The three heads
 
@@ -166,6 +167,20 @@ mapped and named the whole car off the gateway.
 - [ ] **K-line / KWP2000** (Head 3, pre-CAN VAG) — **firmware built** (`KWP`: ISO 14230 fast + 5-baud
   init, framed requests); **bench-untested** pending the K-line transceiver + a pre-CAN car
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
+
+## The line — Typhon's hounds
+
+Named for the guardian hounds of Greek myth. The naming encodes the architecture: **heads = buses**,
+**guardians watch, the messenger acts.** See **[docs/LORE.md](docs/LORE.md)**.
+
+| Tool | Myth | Board | Heads | Job |
+|---|---|---|---|---|
+| **Orthrus** | two-headed hound | Teensy 4.0 | KWP · CAN | the compact watch-dog |
+| **Cerberus** | three-headed guardian of the gate | Teensy 4.1 | KWP · CAN · DoIP | watch the whole gate |
+| **Hermes-CP** | the messenger who passes the guard | one route | — | cross the threshold, fix CP, leave *(private)* |
+
+Orthrus and Cerberus are **one codebase, two build targets** — see [docs/PRODUCT-LINE.md](docs/PRODUCT-LINE.md).
+*Orthrus and Cerberus guard the gate; Hermes is the one who walks past them.*
 
 ## Related
 
