@@ -1,15 +1,25 @@
 name: Build CerberusConsole.exe
 
-# Builds the single-file Windows app and publishes it as a Release.
-# Trigger either by pushing a tag (console-v* or v*), or with the "Run workflow"
-# button (workflow_dispatch), which releases the current CONSOLE_VERSION.
+# Auto-release: on every push to main that touches the app/firmware, read CONSOLE_VERSION
+# and — if that version hasn't been released yet — build the single-file exe, create the
+# tag `console-v<version>`, publish the Release, and prune to the newest few.
+# Convention: bump CONSOLE_VERSION in host/cerberus_console.py for any release-worthy
+# change (console OR bundled firmware), and CI does the rest. Manual run also available.
 on:
   push:
-    tags: ["console-v*", "v*"]
+    branches: [main]
+    paths:
+      - "host/**"
+      - "firmware/*.hex"
+      - ".github/workflows/build-console.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write          # create releases + prune old ones
+  contents: write          # create tags/releases + prune old ones
+
+concurrency:
+  group: build-console
+  cancel-in-progress: false
 
 env:
   KEEP_RELEASES: "5"       # how many console-v* releases to retain (3-5)
@@ -20,13 +30,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # --- compile teensy_loader_cli.exe so the .exe ships a self-contained flasher ---
-      # (Windows build uses native HID via setupapi/hid — no libusb needed.)
-      - uses: msys2/setup-msys2@v2
+      # Decide whether this CONSOLE_VERSION still needs a release (skip if already tagged).
+      - name: Decide release
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(grep -oE 'CONSOLE_VERSION = "[^"]+"' host/cerberus_console.py | grep -oE '[0-9][^"]+')
+          tag="console-v$v"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag already released — skipping."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"   >> "$GITHUB_OUTPUT"
+
+      # --- everything below only runs when there's a new version to ship ---
+      - name: Build teensy_loader_cli            # native HID (setupapi/hid) — no libusb
+        if: steps.decide.outputs.release == 'true'
+        uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc make git
-      - name: Build teensy_loader_cli
+      - name: Compile flasher
+        if: steps.decide.outputs.release == 'true'
         shell: msys2 {0}
         run: |
           git clone --depth 1 https://github.com/PaulStoffregen/teensy_loader_cli
@@ -35,47 +65,41 @@ jobs:
           cp teensy_loader_cli.exe ../host/tools/
           cp LICENSE              ../host/tools/LICENSE-teensy_loader_cli.txt
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        if: steps.decide.outputs.release == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install build deps
+        if: steps.decide.outputs.release == 'true'
         run: pip install pyinstaller pyserial
 
       - name: Build the exe
+        if: steps.decide.outputs.release == 'true'
         shell: cmd
         run: cd host && build_exe.bat
 
-      # --- resolve the version: tag if present, else CONSOLE_VERSION in the source ---
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            v="${GITHUB_REF_NAME#console-}"; v="${v#v}"
-          else
-            v=$(grep -oE 'CONSOLE_VERSION = "[^"]+"' host/cerberus_console.py | grep -oE '[0-9][^"]+')
-          fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "tag=console-v$v" >> "$GITHUB_OUTPUT"
-
       - name: Stage artifact
+        if: steps.decide.outputs.release == 'true'
         shell: bash
         run: |
           mkdir -p out
-          cp "host/dist/CerberusConsole.exe" "out/CerberusConsole-v${{ steps.ver.outputs.version }}.exe"
+          cp "host/dist/CerberusConsole.exe" "out/CerberusConsole-v${{ steps.decide.outputs.version }}.exe"
 
       - name: Publish release
+        if: steps.decide.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: CerberusConsole v${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.decide.outputs.tag }}
+          name: CerberusConsole v${{ steps.decide.outputs.version }}
           body: |
             Single-file Windows build of CerberusConsole (sniff · diagnostics · one-click firmware).
             Bundles both Teensy 4.0/4.1 hexes + `teensy_loader_cli` (GPLv3) — no Python needed.
-          files: out/CerberusConsole-v${{ steps.ver.outputs.version }}.exe
+            Auto-built from `main` at ${{ github.sha }}.
+          files: out/CerberusConsole-v${{ steps.decide.outputs.version }}.exe
 
-      # --- retention: keep only the newest KEEP_RELEASES console-v* releases ---
-      - name: Prune old releases
+      - name: Prune old releases            # keep only the newest KEEP_RELEASES console-v*
+        if: steps.decide.outputs.release == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
