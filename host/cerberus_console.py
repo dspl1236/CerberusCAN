@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.18"
+CONSOLE_VERSION = "0.9.19"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -177,10 +177,13 @@ class Console:
         bar.pack(fill="x")
         ttk.Label(bar, text="Port:").pack(side="left")
         self.port = tk.StringVar(value=self._default_port())
-        ttk.Combobox(bar, textvariable=self.port, width=10, values=self._ports()).pack(side="left", padx=4)
+        self.port_cb = ttk.Combobox(bar, textvariable=self.port, width=10, values=self._ports())
+        self.port_cb.pack(side="left", padx=4)
+        ttk.Button(bar, text="Rescan", width=7, command=self._refresh_ports).pack(side="left")  # re-scan COM ports
         self.btn_conn = ttk.Button(bar, text="Connect", command=self._toggle_conn)
         self.btn_conn.pack(side="left", padx=4)
-        self._action(bar, "INFO", lambda: self._diag("INFO", lambda r: self._popup("INFO", r)))
+        # INFO: show the popup AND refresh the fw/board fields from the reply
+        self._action(bar, "INFO", lambda: self._diag("INFO", lambda r: (self._on_info(r), self._popup("INFO", r))))
         self._action(bar, "SELFTEST", lambda: self._diag("SELFTEST", self._selftest_done, 6))
         self.mode_lbl = tk.StringVar(value="—")
         ttk.Label(bar, textvariable=self.mode_lbl, foreground="#0a0",
@@ -321,6 +324,15 @@ class Console:
         others = sorted(p.device for p in ports if p.vid != 0x16C0)
         return teensy + others
 
+    def _refresh_ports(self):
+        """Re-scan COM ports (for a board plugged in after the app started) and update the dropdown.
+        Keeps the current selection if still present, else picks the best Teensy candidate."""
+        ports = self._ports()
+        self.port_cb["values"] = ports
+        if self.port.get() not in ports:
+            self.port.set(self._default_port())
+        self.status.set("Ports: " + (", ".join(ports) if ports else "none found"))
+
     # ---------------- connection ----------------
     def _toggle_conn(self):
         self._disconnect() if self.running else self._connect_smart()
@@ -401,7 +413,7 @@ class Console:
         if info:                                # set fw/board straight from the probe's INFO —
             self._on_info(info)                 # detection no longer depends on the async read path
         self._on_tab()
-        self._diag("INFO", self._on_info, 2.0)
+        self._diag("INFO", self._on_info, 6.0)  # re-confirm via the live path (won't clobber on timeout)
 
     def _disconnect(self):
         self.running = False
@@ -932,17 +944,20 @@ class Console:
         self.fw_out.pack(fill="both", expand=True, padx=8, pady=6)
 
     def _on_info(self, r):
+        # Only act on a real INFO reply. A timed-out/other reply (e.g. "(timeout)") must NOT clobber
+        # a good detection — that bug reset fw/board to "?" right after the probe set them correctly.
+        if not r or not r.startswith("CERBERUS:"):
+            return
         self.fw_ver, self.fw_board, self.product = "?", "?", "CerberusCAN"
-        if r.startswith("CERBERUS:"):
-            toks = r.split()
-            head = toks[0].split(":", 1)
-            if len(head) == 2:
-                self.fw_ver = head[1]
-            for t in toks:
-                if t.startswith("board="):
-                    self.fw_board = t.split("=", 1)[1]
-                elif t.startswith("product="):
-                    self.product = t.split("=", 1)[1]   # Cerberus (4.1) | Orthrus (4.0)
+        toks = r.split()
+        head = toks[0].split(":", 1)
+        if len(head) == 2:
+            self.fw_ver = head[1]
+        for t in toks:
+            if t.startswith("board="):
+                self.fw_board = t.split("=", 1)[1]
+            elif t.startswith("product="):
+                self.product = t.split("=", 1)[1]       # Cerberus (4.1) | Orthrus (4.0)
         self.root.title(f"{self.product} Console  v{CONSOLE_VERSION}  —  {self.fw_board} fw {self.fw_ver}")
         self._refresh_fw_tab()
         self._refresh_rawport()              # we're on the smart port now → label the raw sibling
