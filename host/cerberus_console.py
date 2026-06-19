@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.16"
+CONSOLE_VERSION = "0.9.17"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -323,11 +323,57 @@ class Console:
 
     # ---------------- connection ----------------
     def _toggle_conn(self):
-        if self.running:
-            self._disconnect()
-        else:
-            self._tried_ports = set()      # fresh probe-walk for this connect attempt
-            self._connect()
+        self._disconnect() if self.running else self._connect_smart()
+
+    def _probe_port(self, dev, timeout=1.6):
+        """Synchronously test whether dev is the Cerberus COMMAND port: open, send INFO, read
+        directly for a 'CERBERUS:' reply. Returns the INFO line or None. Direct blocking read —
+        no async read-loop / queue timing — so it's reliable in the frozen exe (where the old timed
+        auto-hop raced and bounced off the good port). The raw K-line CDC answers nothing -> None."""
+        try:
+            s = serial.Serial(dev, 115200, timeout=0.2)
+        except Exception:
+            return None
+        try:
+            time.sleep(0.25)
+            s.reset_input_buffer()
+            s.write(b"INFO\n")
+            deadline = time.time() + timeout
+            buf = b""
+            while time.time() < deadline:
+                chunk = s.read(256)
+                if chunk:
+                    buf += chunk
+                    if b"CERBERUS:" in buf:
+                        for line in buf.replace(b"\r", b"\n").split(b"\n"):
+                            if b"CERBERUS:" in line:
+                                return line.decode("ascii", "replace").strip()
+            return None
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    def _connect_smart(self):
+        """Find the port that actually answers INFO (the smart command port) and connect to THAT.
+        Probes the user's selection first, then the other Teensy (VID 0x16C0) ports — never relies
+        on serial_number (blank in a frozen exe), and skips the silent raw K-line CDC."""
+        sel = self.port.get()
+        order = [sel] + [d for d in self._candidate_ports() if d != sel]
+        for dev in order:
+            self.status.set(f"Probing {dev} for the Cerberus command port…")
+            self.root.update_idletasks()
+            if self._probe_port(dev):
+                self.port.set(dev)
+                self._connect()
+                return
+        messagebox.showerror("No Cerberus found",
+            "No COM port answered INFO.\n\n"
+            "• Check the board is plugged in and flashed (the K-line port is silent by design).\n"
+            "• Close any other app holding the port (incl. the Python console).\n"
+            "Then try Connect again.")
+        self.status.set("No Cerberus command port found — see the dialog.")
 
     def _connect(self):
         try:
@@ -343,27 +389,6 @@ class Console:
         self.status.set(f"Connected {self.port.get()}")
         self._on_tab()
         self._diag("INFO", self._on_info, 2.0)
-        self.root.after(2200, self._verify_smart_port)   # dual-serial: probe-hop off the raw port if no INFO
-
-    def _verify_smart_port(self):
-        """If INFO never answered, we're on the wrong port — almost always the board's RAW K-line
-        CDC (a transparent cable that replies to nothing). Walk to the next candidate Teensy port
-        until one answers. Does NOT rely on serial_number (blank in a frozen exe); bounded by the
-        set of ports already tried, so it can't ping-pong."""
-        if not self.running or self.fw_ver != "?":
-            return
-        tried = getattr(self, "_tried_ports", set())
-        tried.add(self.port.get())
-        self._tried_ports = tried
-        nxt = next((d for d in self._candidate_ports() if d not in tried), None)
-        if not nxt:
-            self.status.set(f"{self.port.get()} opened but no INFO reply — that's the raw K-line port "
-                            "(or check the board/firmware). No other port answered.")
-            return
-        self.status.set(f"{self.port.get()} didn't answer (raw port?) — trying {nxt}…")
-        self._disconnect()
-        self.port.set(nxt)
-        self._connect()
 
     def _disconnect(self):
         self.running = False
@@ -891,7 +916,6 @@ class Console:
     def _on_info(self, r):
         self.fw_ver, self.fw_board, self.product = "?", "?", "CerberusCAN"
         if r.startswith("CERBERUS:"):
-            self._tried_ports = set()             # found the smart port; reset the probe-walk
             toks = r.split()
             head = toks[0].split(":", 1)
             if len(head) == 2:
