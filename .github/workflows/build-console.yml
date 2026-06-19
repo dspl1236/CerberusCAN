@@ -60,9 +60,12 @@ jobs:
         shell: msys2 {0}
         run: |
           git clone --depth 1 https://github.com/PaulStoffregen/teensy_loader_cli
-          # CC=gcc forces the native MINGW64 toolchain (has ddk/hidsdi.h); bare `cc`
-          # resolves to the MSYS POSIX gcc, which lacks the Windows HID/DDK headers.
-          cd teensy_loader_cli && make CC=gcc OS=WINDOWS
+          cd teensy_loader_cli
+          # Modern mingw-w64 ships the HID headers top-level (<hidsdi.h>), not under the
+          # legacy <ddk/...> path the source uses; rewrite the include. CC=gcc forces the
+          # native MINGW64 toolchain (bare `cc` resolves to the wrong MSYS POSIX gcc).
+          sed -i 's@ddk/hid@hid@g' teensy_loader_cli.c
+          make CC=gcc OS=WINDOWS
           mkdir -p ../host/tools
           cp teensy_loader_cli.exe ../host/tools/
           cp LICENSE              ../host/tools/LICENSE-teensy_loader_cli.txt
