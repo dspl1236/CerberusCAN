@@ -39,8 +39,27 @@ Console — the board decides which heads light up. Named for the hounds of Typh
 DoIP at the OBD connector is standard **100BASE-TX**, so the 4.1's Ethernet PHY wires straight to
 3/11/12/13 — no media converter. (The in-vehicle 100BASE-T1 backbone never reaches the diag port.)
 
+## DoIP capture (the "sniff" on the Ethernet side)
+
+CAN sniff works because CAN is a shared multi-drop bus — Head 2 hears every frame. **Ethernet is
+switched/point-to-point**, so that trick doesn't carry over: a single port (the 4.1 has one MAC +
+one PHY) plugged in and set promiscuous still only sees its own unicast + broadcast/multicast — the
+vehicle switch won't mirror a third-party tester↔gateway session to it.
+
+So the DoIP head's "sniff" is **own-session capture**: when Cerberus is the active DoIP tester (or
+emulating an ECU), it logs every frame it sends/receives to a **`.pcap`** (link-type Ethernet) that
+opens in Wireshark with its native DoIP dissector. That's the buildable, useful capture.
+
+**Future (way down the line):** a specialized **in-line DoIP tap** — two Ethernet interfaces bridged
+(forward + copy), or a passive copper tap / SPAN-mirror feeding the capture — to passively record a
+*third-party* tester's DoIP session the way Head 2 does on CAN. That needs a second interface (and,
+for full-duplex 100BASE-TX, ideally two capture streams — one per direction), so it's external
+hardware beyond the single-PHY 4.1, not a firmware-only feature.
+
 ## Status
 
 Built + on the flagship today: KWP (firmware, bench-untested) + dual-CAN (hardware-validated).
 **DoIP is the only unbuilt head** — parked until a 4.1 + Ethernet-PHY kit is wired to OBD 3/11/12/13
-and a DoIP-era car is on hand. See [HARDWARE.md](HARDWARE.md) and the project README.
+and a DoIP-era car is on hand. When built, the DoIP head ships as **active tester + ECU emulator +
+own-session pcap capture** (see above); the in-line third-party tap is a later, external-hardware
+project. See [HARDWARE.md](HARDWARE.md) and the project README.
