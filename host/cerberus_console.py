@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.14"
+CONSOLE_VERSION = "0.9.15"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -253,8 +253,8 @@ class Console:
         self.nb.add(f, text="K-Line")
         note = ("Head 3 — K-line / KWP2000 (pre-CAN VAG). Needs the K-line transceiver wired "
                 "(Serial2: pin 8→TXD, pin 7←RXD; line→OBD 7). Bench-untested.  •  Dumb-cable for "
-                "NefMoto/VCDS-dumb is ALWAYS on the board's 2nd COM port — click 'Raw K-line port' "
-                "to see which. No flip needed; smart KWP here yields it while that app is open.")
+                "NefMoto/VCDS-dumb is ALWAYS transparent on the board's 2nd COM port (shown at right) "
+                "— no trigger needed; smart KWP here just yields the K-line while that app is open.")
         ttk.Label(f, text=note, foreground="#a60", wraplength=720, padding=(6, 4)).pack(fill="x")
         top = ttk.Frame(f, padding=4)
         top.pack(fill="x")
@@ -279,7 +279,9 @@ class Console:
         ttk.Label(top2, text="      KW1281:").pack(side="left")
         self._action(top2, "Init", self._k81_init)
         self._action(top2, "Read block", self._k81_read)
-        ttk.Button(top2, text="Raw K-line port (for NefMoto)…", command=self._show_raw_kline_port).pack(side="right", padx=4)
+        self.kl_rawport = tk.StringVar(value="")     # auto-filled with the always-dumb K-line COM port
+        ttk.Label(top2, textvariable=self.kl_rawport, foreground="#06c",
+                  font=("TkDefaultFont", 9, "bold")).pack(side="right", padx=6)
         self.kl_out = tk.Text(f, height=16, wrap="word")
         self.kl_out.pack(fill="both", expand=True, padx=6, pady=4)
 
@@ -357,6 +359,7 @@ class Console:
         self.root.title("CerberusCAN Console  v" + CONSOLE_VERSION)
         self.fw_running.set("— (connect first)")
         self.fw_status.set("")
+        self.kl_rawport.set("")
         self.btn_conn.config(text="Connect")
         self.mode_lbl.set("—")
         self.status.set("Disconnected.")
@@ -376,30 +379,12 @@ class Console:
         sibs = [p.device for p in ports if p.serial_number == my_sn and p.device != me]
         return sorted(sibs)[0] if sibs else None
 
-    def _show_raw_kline_port(self):
-        """Tell the user which COM port to point NefMoto (or any dumb-KKL app) at. With the
-        dual-serial firmware the K-line raw cable is ALWAYS live on the board's 2nd COM port —
-        no flipping, no handoff; our smart KWP yields it automatically while that app is open."""
-        if not self.running:
-            messagebox.showinfo("Connect first",
-                                "Connect to the board first so I can find its second (raw) port.")
-            return
-        sib = self._sibling_kline_port()
-        smart = self.port.get()
-        if sib:
-            msg = (f"Raw K-line cable (dumb KKL): **{sib}**\n"
-                   f"Smart Cerberus port: {smart}\n\n"
-                   f"Point NefMoto / VCDS-dumb / any KKL app at {sib}.\n"
-                   "It's always transparent there — no mode to set. While that app is connected, "
-                   "this Console's smart KWP politely yields the K-line and reclaims it when the "
-                   "app closes (no replug).")
-            self._kl_show(f"--- Raw K-line cable = {sib}  (smart = {smart}). Point NefMoto at {sib}. ---")
-        else:
-            msg = ("Couldn't find a second COM port for this board.\n\n"
-                   "That usually means it's running a single-serial firmware. Flash the current "
-                   "(dual-serial) firmware from the Firmware tab, or use KWP:passthrough as a "
-                   "single-port fallback.")
-        messagebox.showinfo("Raw K-line port (for NefMoto)", msg)
+    def _refresh_rawport(self):
+        """Passively show WHICH COM is the always-dumb raw K-line cable (the board's 2nd CDC port).
+        No trigger needed — that port is transparent from power-on; this just labels it so you know
+        where to point NefMoto. Smart KWP here yields it automatically while that app is open."""
+        sib = self._sibling_kline_port() if self.running else None
+        self.kl_rawport.set(f"Raw K-line cable (NefMoto) → {sib}" if sib else "")
 
     def _on_close(self):
         self._disconnect()
@@ -894,6 +879,7 @@ class Console:
                     self.product = t.split("=", 1)[1]   # Cerberus (4.1) | Orthrus (4.0)
         self.root.title(f"{self.product} Console  v{CONSOLE_VERSION}  —  {self.fw_board} fw {self.fw_ver}")
         self._refresh_fw_tab()
+        self._refresh_rawport()              # we're on the smart port now → label the raw sibling
 
     def _refresh_fw_tab(self):
         self.fw_running.set(f"{self.fw_board}  —  {self.fw_ver}")
