@@ -68,7 +68,12 @@ jobs:
           make CC=gcc OS=WINDOWS
           mkdir -p ../host/tools
           cp teensy_loader_cli.exe ../host/tools/
-          cp LICENSE              ../host/tools/LICENSE-teensy_loader_cli.txt
+          # bundle the GPLv3 license (filename varies upstream); fall back to a pointer
+          cp LICENSE ../host/tools/LICENSE-teensy_loader_cli.txt 2>/dev/null \
+            || cp COPYING ../host/tools/LICENSE-teensy_loader_cli.txt 2>/dev/null \
+            || cp LICENSE.* ../host/tools/LICENSE-teensy_loader_cli.txt 2>/dev/null \
+            || echo "teensy_loader_cli is GPLv3 — https://github.com/PaulStoffregen/teensy_loader_cli" \
+                 > ../host/tools/LICENSE-teensy_loader_cli.txt
 
       - name: Setup Python
         if: steps.decide.outputs.release == 'true'
