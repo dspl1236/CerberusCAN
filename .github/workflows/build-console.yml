@@ -60,7 +60,9 @@ jobs:
         shell: msys2 {0}
         run: |
           git clone --depth 1 https://github.com/PaulStoffregen/teensy_loader_cli
-          cd teensy_loader_cli && make OS=WINDOWS
+          # CC=gcc forces the native MINGW64 toolchain (has ddk/hidsdi.h); bare `cc`
+          # resolves to the MSYS POSIX gcc, which lacks the Windows HID/DDK headers.
+          cd teensy_loader_cli && make CC=gcc OS=WINDOWS
           mkdir -p ../host/tools
           cp teensy_loader_cli.exe ../host/tools/
           cp LICENSE              ../host/tools/LICENSE-teensy_loader_cli.txt
