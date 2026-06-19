@@ -2,37 +2,36 @@
 """
 CerberusCAN Console
 ===================
-A simple plug-and-go app for the CerberusCAN VCI — no Simos-Suite needed.
+A plug-and-go app for the CerberusCAN VCI — no Simos-Suite needed.
 
     pip install pyserial          # tkinter ships with Python
     python cerberus_console.py    # pick the COM port, hit Connect
 
-Tabs:
-  * Sniff       — live passive CAN trace (Head 2). Selecting it puts the board in
-                  MODE:sniff (BOTH heads listen-only = zero bus footprint), safe to
-                  log a live ODIS/dealer session.
-  * Diagnostics — basic active VCI: read VIN / part number, Read DTCs, Clear DTCs,
-                  per module. Selecting it puts the board in MODE:vci (Head 1 active).
+Organised by Cerberus's heads:
+  * CANBUS  (Heads 1-2, CAN) — Sniff (passive Head-2 logger) + Diagnostics (Head-1 UDS:
+            VIN/part, read/clear DTCs with SAE J2012 text).
+  * K-Line  (Head 3, KWP2000/KW1281) — init, ECU-ID, read/clear faults (VAG DIDB text).
+            Needs the K-line transceiver wired (Serial2 7/8 -> OBD 7).
+  * Firmware — running vs bundled version, one-click flash.
 
-Switching tabs sets the firmware MODE automatically, so you never think about it.
-Top bar: Connect, live mode label, INFO, SELFTEST.
+Switching views sets the firmware MODE automatically; version + board show in the title bar.
 """
 import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.6"
-BUNDLED_FW = "0.9.6"                       # bump in lockstep when the bundled hexes change
+CONSOLE_VERSION = "0.9.8"
+BUNDLED_FW = "0.9.8"                       # bump in lockstep when the bundled hexes change
 
 
 def _base():
-    # PyInstaller-frozen: bundled data lives in sys._MEIPASS; dev: this script's folder.
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
 BASE = _base()
+sys.path.insert(0, BASE)   # so didb/ + sibling modules import when frozen or run from elsewhere
 
 
 def _firstfile(*cands):
@@ -43,8 +42,8 @@ def _firstfile(*cands):
 
 
 def _hex(name):
-    return _firstfile(os.path.join(BASE, "firmware", name),        # frozen bundle / shipped layout
-                      os.path.join(BASE, "..", "firmware", name),   # dev repo layout
+    return _firstfile(os.path.join(BASE, "firmware", name),
+                      os.path.join(BASE, "..", "firmware", name),
                       os.path.join(BASE, name))
 
 
@@ -53,13 +52,13 @@ MCU = {"T4.1": "TEENSY41", "T4.0": "TEENSY40"}
 
 
 def find_loader():
-    """teensy_loader_cli.exe — bundled in tools/ (frozen exe or repo), else next to the app, else PATH."""
     for n in ("teensy_loader_cli.exe", "teensy_loader_cli"):
         f = _firstfile(os.path.join(BASE, "tools", n), os.path.join(BASE, n),
                        os.path.join(BASE, "..", "tools", n), os.path.join(BASE, "..", n)) or shutil.which(n)
         if f:
             return f
     return None
+
 
 try:
     import serial
@@ -68,33 +67,41 @@ except ImportError:
     print("This app needs pyserial:  pip install pyserial")
     sys.exit(1)
 
-# Known VAG diagnostic-CAN IDs (500k OBD diag bus) -> label, for the sniff grid.
+# Decoders (local modules; degrade gracefully if data is absent)
+try:
+    import sae_decode            # CAN/UDS SAE J2012 text  (saedb/)
+except Exception:
+    sae_decode = None
+try:
+    import kline_decode          # K-line VAG fault-location text (didb/)
+except Exception:
+    kline_decode = None
+
+# Sniff-grid CAN-ID labels
 LABELS = {
-    0x700: "Broadcast/TP",
-    0x710: "Gateway req",   0x77A: "Gateway resp",
-    0x7E0: "Engine req",    0x7E8: "Engine resp",
-    0x7E1: "TCU req",       0x7E9: "TCU resp",
-    0x712: "Airbag req",    0x77C: "Airbag resp",
-    0x713: "Cluster req",   0x77D: "Cluster resp",
-    0x714: "ABS req",       0x77E: "ABS resp",
-    0x715: "Climatronic req", 0x77F: "Climatronic resp",
-    0x70E: "MMI req",       0x778: "MMI resp",
+    0x700: "Broadcast/TP", 0x710: "Gateway req", 0x77A: "Gateway resp",
+    0x7E0: "Engine req", 0x7E8: "Engine resp", 0x7E1: "TCU req", 0x7E9: "TCU resp",
+    0x712: "Airbag req", 0x77C: "Airbag resp", 0x713: "Cluster req", 0x77D: "Cluster resp",
+    0x714: "ABS req", 0x77E: "ABS resp", 0x715: "Climatronic req", 0x77F: "Climatronic resp",
+    0x70E: "MMI req", 0x778: "MMI resp",
 }
-# Diagnostics module picker: (label, request id, response id)
+# CAN diagnostics module picker: (label, request id, response id)
 MODULES = [
-    ("Engine / ECM",        "7E0", "7E8"),
-    ("Transmission / TCM",  "7E1", "7E9"),
-    ("Gateway / J533",      "710", "77A"),
-    ("ABS / brakes",        "714", "77E"),
-    ("Airbag",              "712", "77C"),
-    ("Instrument cluster",  "713", "77D"),
-    ("Climatronic / HVAC",  "715", "77F"),
-    ("MMI / infotainment",  "70E", "778"),
+    ("Engine / ECM", "7E0", "7E8"), ("Transmission / TCM", "7E1", "7E9"),
+    ("Gateway / J533", "710", "77A"), ("ABS / brakes", "714", "77E"),
+    ("Airbag", "712", "77C"), ("Instrument cluster", "713", "77D"),
+    ("Climatronic / HVAC", "715", "77F"), ("MMI / infotainment", "70E", "778"),
+]
+# K-line module picker: (label, address byte hex)
+KL_MODULES = [
+    ("Engine — 01", "01"), ("Transmission — 02", "02"), ("ABS — 03", "03"),
+    ("Central electrics — 09", "09"), ("Airbag — 15", "15"), ("Instruments — 17", "17"),
+    ("Immobiliser — 25", "25"),
 ]
 NRC = {0x11: "service not supported", 0x12: "sub-function not supported",
        0x22: "conditions not correct", 0x31: "request out of range",
-       0x33: "security access denied", 0x7E: "service not supported in session",
-       0x7F: "service not supported in session"}
+       0x33: "security access denied", 0x78: "response pending",
+       0x7E: "service not supported in session", 0x7F: "service not supported in session"}
 
 
 def label_for(idhex):
@@ -122,9 +129,9 @@ class Console:
         root.title("CerberusCAN Console  v" + CONSOLE_VERSION)
         self.ser = None
         self.running = False
-        self.mon_q = queue.Queue()        # M2 sniff frames
-        self.resp_q = queue.Queue()       # command replies
-        self.result_q = queue.Queue()     # (callback, text) -> main thread
+        self.mon_q = queue.Queue()
+        self.resp_q = queue.Queue()
+        self.result_q = queue.Queue()
         self.cmd_lock = threading.Lock()
         self._busy_btns = []
         self.rec_fh = None
@@ -146,8 +153,7 @@ class Console:
         bar.pack(fill="x")
         ttk.Label(bar, text="Port:").pack(side="left")
         self.port = tk.StringVar(value=self._default_port())
-        ttk.Combobox(bar, textvariable=self.port, width=10,
-                     values=self._ports()).pack(side="left", padx=4)
+        ttk.Combobox(bar, textvariable=self.port, width=10, values=self._ports()).pack(side="left", padx=4)
         self.btn_conn = ttk.Button(bar, text="Connect", command=self._toggle_conn)
         self.btn_conn.pack(side="left", padx=4)
         self._action(bar, "INFO", lambda: self._diag("INFO", lambda r: self._popup("INFO", r)))
@@ -157,10 +163,10 @@ class Console:
                   font=("TkDefaultFont", 9, "bold")).pack(side="right")
         ttk.Label(bar, text="mode:").pack(side="right")
 
-        self.nb = ttk.Notebook(self.root)
+        self.nb = ttk.Notebook(self.root)               # top-level: CANBUS / K-Line / Firmware
         self.nb.pack(fill="both", expand=True, padx=6, pady=4)
-        self._build_sniff()
-        self._build_diag()
+        self._build_canbus()
+        self._build_kline()
         self._build_fw()
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
 
@@ -168,9 +174,19 @@ class Console:
         ttk.Label(self.root, textvariable=self.status, relief="sunken",
                   anchor="w", padding=4).pack(fill="x", side="bottom")
 
+    # ----- CANBUS page (Heads 1-2): Sniff + Diagnostics -----
+    def _build_canbus(self):
+        page = ttk.Frame(self.nb)
+        self.nb.add(page, text="CANBUS")
+        self.canbus_nb = ttk.Notebook(page)
+        self.canbus_nb.pack(fill="both", expand=True)
+        self._build_sniff()
+        self._build_diag()
+        self.canbus_nb.bind("<<NotebookTabChanged>>", self._on_tab)
+
     def _build_sniff(self):
-        f = ttk.Frame(self.nb)
-        self.nb.add(f, text="Sniff")
+        f = ttk.Frame(self.canbus_nb)
+        self.canbus_nb.add(f, text="Sniff")
         btns = ttk.Frame(f, padding=4)
         btns.pack(fill="x")
         self.btn_pause = ttk.Button(btns, text="Pause", command=self._toggle_pause)
@@ -181,7 +197,7 @@ class Console:
         self.btn_rec.pack(side="left", padx=2)
         self.paused = False
         cols = ("id", "label", "count", "period", "data")
-        self.tree = ttk.Treeview(f, columns=cols, show="headings", height=18)
+        self.tree = ttk.Treeview(f, columns=cols, show="headings", height=16)
         for c, w, t, a in (("id", 60, "ID", "center"), ("label", 140, "Label", "w"),
                            ("count", 70, "Count", "e"), ("period", 80, "Period ms", "e"),
                            ("data", 280, "Last Data", "w")):
@@ -190,21 +206,44 @@ class Console:
         self.tree.pack(fill="both", expand=True, padx=4, pady=4)
 
     def _build_diag(self):
-        f = ttk.Frame(self.nb)
-        self.nb.add(f, text="Diagnostics")
+        f = ttk.Frame(self.canbus_nb)
+        self.canbus_nb.add(f, text="Diagnostics")
         top = ttk.Frame(f, padding=4)
         top.pack(fill="x")
         ttk.Label(top, text="Module:").pack(side="left")
         self.module = tk.StringVar(value=MODULES[0][0])
-        ttk.Combobox(top, textvariable=self.module, width=22, state="readonly",
+        ttk.Combobox(top, textvariable=self.module, width=20, state="readonly",
                      values=[m[0] for m in MODULES]).pack(side="left", padx=4)
         self._action(top, "Read VIN", lambda: self._read_did("F190"))
         self._action(top, "Read Part #", lambda: self._read_did("F187"))
         self._action(top, "Read DTCs", self._read_dtcs)
         self._action(top, "Clear DTCs", self._clear_dtcs)
         ttk.Button(top, text="Clear log", command=lambda: self.out.delete("1.0", "end")).pack(side="right", padx=2)
-        self.out = tk.Text(f, height=20, wrap="word")
+        self.out = tk.Text(f, height=18, wrap="word")
         self.out.pack(fill="both", expand=True, padx=4, pady=4)
+
+    # ----- K-Line page (Head 3): KWP2000 / KW1281 -----
+    def _build_kline(self):
+        f = ttk.Frame(self.nb)
+        self.nb.add(f, text="K-Line")
+        note = ("Head 3 — K-line / KWP2000 (pre-CAN VAG). Needs the K-line transceiver wired "
+                "(Serial2: pin 8→TXD, pin 7←RXD; line→OBD 7). Bench-untested.")
+        ttk.Label(f, text=note, foreground="#a60", wraplength=720, padding=(6, 4)).pack(fill="x")
+        top = ttk.Frame(f, padding=4)
+        top.pack(fill="x")
+        ttk.Label(top, text="Module/addr:").pack(side="left")
+        self.kl_mod = tk.StringVar(value=KL_MODULES[0][0])
+        ttk.Combobox(top, textvariable=self.kl_mod, width=20, state="readonly",
+                     values=[m[0] for m in KL_MODULES]).pack(side="left", padx=4)
+        self._action(top, "Fast init", self._kwp_fast)
+        self._action(top, "5-baud init", self._kwp_slow)
+        self._action(top, "Session 10 89", lambda: self._kwp_send("1089", "session"))
+        self._action(top, "Read ECU-ID", self._kwp_ecuid)
+        self._action(top, "Read Faults", self._kwp_faults)
+        self._action(top, "Clear Faults", self._kwp_clear)
+        ttk.Button(top, text="Clear log", command=lambda: self.kl_out.delete("1.0", "end")).pack(side="right", padx=2)
+        self.kl_out = tk.Text(f, height=18, wrap="word")
+        self.kl_out.pack(fill="both", expand=True, padx=6, pady=4)
 
     def _action(self, parent, text, cmd):
         b = ttk.Button(parent, text=text, command=cmd)
@@ -246,8 +285,8 @@ class Console:
         threading.Thread(target=self._read_loop, daemon=True).start()
         self.btn_conn.config(text="Disconnect")
         self.status.set(f"Connected {self.port.get()}")
-        self._on_tab()  # apply the current tab's mode
-        self._diag("INFO", self._on_info, 2.0)   # read version + board -> title bar + Firmware tab
+        self._on_tab()
+        self._diag("INFO", self._on_info, 2.0)
 
     def _disconnect(self):
         self.running = False
@@ -273,20 +312,29 @@ class Console:
         self._disconnect()
         self.root.destroy()
 
+    def _current_view(self):
+        top = self.nb.tab(self.nb.select(), "text")
+        if top == "CANBUS":
+            try:
+                return self.canbus_nb.tab(self.canbus_nb.select(), "text")  # "Sniff" | "Diagnostics"
+            except Exception:
+                return "Diagnostics"
+        return top  # "K-Line" | "Firmware"
+
     def _on_tab(self, _evt=None):
         if not self.running:
             return
-        tab = self.nb.tab(self.nb.select(), "text")
-        if tab == "Sniff":
-            self._send_raw("MODE:sniff")     # both heads LOM = zero footprint
-            self._send_raw("MON:on")         # explicit too, so it streams even on pre-MODE firmware
+        view = self._current_view()
+        if view == "Sniff":
+            self._send_raw("MODE:sniff")
+            self._send_raw("MON:on")
             self.mode_lbl.set("SNIFF")
             self.sniffing = True
         else:
             self.sniffing = False
             self._send_raw("MON:off")
-            self._send_raw("MODE:vci")       # Head 1 active VCI
-            self.mode_lbl.set("VCI")
+            self._send_raw("MODE:vci")
+            self.mode_lbl.set("KWP" if view == "K-Line" else "VCI")
 
     # ---------------- serial ----------------
     def _send_raw(self, cmd):
@@ -305,7 +353,7 @@ class Console:
                 if not self.running:
                     break
                 buf = b""
-                if not self._reconnect():   # USB dropped (flaky extender) -> keep retrying
+                if not self._reconnect():
                     break
                 continue
             if not chunk:
@@ -323,9 +371,6 @@ class Console:
                     self.resp_q.put(ln)
 
     def _reconnect(self):
-        """USB link dropped (common on long runs over flaky extenders). Keep retrying to reopen
-        the port, then re-apply the current mode and resume. The board may have reset (USB-powered),
-        so MON/mode are re-asserted. Returns False if the user disconnected meanwhile."""
         self._link = "reconnecting"
         try:
             if self.ser:
@@ -354,10 +399,6 @@ class Console:
         return False
 
     def _cmd(self, cmd, timeout=8.0, expect=None):
-        """Synchronous send + wait for a terminal reply. Worker-thread only.
-        `expect` (e.g. '59','62','54') guards against stale/cross-talk replies: an OK:<hex>
-        whose payload doesn't start with the expected response SID (or 7F) is skipped, so a
-        leftover reply from a prior read can never be mistaken for this one."""
         with self.cmd_lock:
             try:
                 while True:
@@ -375,7 +416,7 @@ class Console:
                     if expect:
                         p = ln[3:].upper()
                         if not (p.startswith(expect) or p.startswith("7F")):
-                            continue   # not the reply we asked for -> keep waiting
+                            continue
                     return ln
                 if ln.startswith(("ERR", "DONE", "STATS:", "MODE:", "M2STAT",
                                   "PONG", "CERBERUS:", "H2TEST", "SELFTEST")):
@@ -386,14 +427,14 @@ class Console:
         if not self.running:
             messagebox.showinfo("Not connected", "Connect first.")
             return
-        self._set_busy(True)   # block click-ahead until this command's reply lands
+        self._set_busy(True)
 
         def work():
             r = self._cmd(cmd, timeout, expect)
             self.result_q.put((parser, r))
         threading.Thread(target=work, daemon=True).start()
 
-    # ---------------- diagnostics actions ----------------
+    # ---------------- CAN diagnostics ----------------
     def _mod_ids(self):
         name = self.module.get()
         for m in MODULES:
@@ -433,16 +474,18 @@ class Console:
             except ValueError:
                 return f"{head} {r}"
             if len(b) >= 2 and b[0] == 0x59 and b[1] == 0x02:
-                recs = b[3:]                          # skip 59 02 <availability-mask>
+                recs = b[3:]
                 n = len(recs) // 4
                 if n == 0:
                     return f"{head} none stored."
                 lines = [head]
                 for i in range(0, n * 4, 4):
-                    code = decode_dtc(recs[i], recs[i + 1], recs[i + 2])
-                    st = recs[i + 3]
+                    b0, b1, b2, st = recs[i], recs[i + 1], recs[i + 2], recs[i + 3]
+                    code = decode_dtc(b0, b1, b2)
+                    desc = sae_decode.describe(code.split("-")[0], b2) if sae_decode else ""
                     flag = " [confirmed]" if st & 0x08 else (" [pending]" if st & 0x04 else "")
-                    lines.append(f"   {code}   status=0x{st:02X}{flag}")
+                    txt = f"   {code}   {desc}".rstrip() if desc else f"   {code}"
+                    lines.append(f"{txt}   status=0x{st:02X}{flag}")
                 return "\n".join(lines)
         return self._fmt_neg(r) or f"{head} {r}"
 
@@ -467,26 +510,88 @@ class Console:
         self.out.insert("end", text + "\n")
         self.out.see("end")
 
+    # ---------------- K-line (KWP2000) actions ----------------
+    def _kl_addr(self):
+        name = self.kl_mod.get()
+        for label, addr in KL_MODULES:
+            if label == name:
+                return addr
+        return "01"
+
+    def _kl_show(self, text):
+        self.kl_out.insert("end", text + "\n")
+        self.kl_out.see("end")
+
+    def _kwp_fast(self):
+        self._diag(f"KWP:fast:{self._kl_addr()}", self._kl_show, 3.0)
+
+    def _kwp_slow(self):
+        self._diag(f"KWP:slow:{self._kl_addr()}", self._kl_show, 5.0)
+
+    def _kwp_send(self, hexreq, what):
+        self._diag(f"KWP:{hexreq}", lambda r: self._kl_show(f"{what}: {r}"), 4.0)
+
+    def _kwp_ecuid(self):
+        self._diag("KWP:1A9B", lambda r: self._kl_show(self._fmt_kwp_id(r)), 4.0)
+
+    def _kwp_faults(self):
+        self._diag("KWP:1882FFFFFF", lambda r: self._kl_show(self._fmt_kwp_faults(r)), 5.0)
+
+    def _kwp_clear(self):
+        if not messagebox.askyesno("Clear K-line faults", "Clear all faults on the K-line ECU?"):
+            return
+        self._diag("KWP:14FF00", lambda r: self._kl_show(f"clear: {r}"), 4.0)
+
+    def _fmt_kwp_id(self, r):
+        if r.startswith("OK:"):
+            try:
+                b = bytes.fromhex(r[3:])
+                if len(b) >= 2 and b[0] == 0x5A:
+                    return f"ECU-ID: {ascii_of(b[2:])}"
+            except ValueError:
+                pass
+        return f"ECU-ID: {r}"
+
+    def _fmt_kwp_faults(self, r):
+        if not r.startswith("OK:"):
+            return f"K-line faults: {r}"
+        try:
+            b = bytes.fromhex(r[3:])
+        except ValueError:
+            return f"K-line faults: {r}"
+        if len(b) >= 2 and b[0] == 0x58:           # readDTCByStatus positive
+            count = b[1]
+            recs = b[2:]
+            if count == 0 or len(recs) < 3:
+                return "K-line faults: none stored."
+            lines = [f"K-line faults ({count}):"]
+            for i in range(0, (len(recs) // 3) * 3, 3):
+                hi, lo, st = recs[i], recs[i + 1], recs[i + 2]
+                if (hi << 8 | lo) == 0xFFFF:
+                    continue
+                if kline_decode:
+                    lines.append("   " + kline_decode.fault_line(hi, lo, st))
+                else:
+                    lines.append(f"   {(hi<<8|lo):05d}   status=0x{st:02X}")
+            return "\n".join(lines)
+        return f"K-line faults: {r}"
+
     def _popup(self, title, r):
-        # top-bar actions (INFO/SELFTEST) show here so they're visible from ANY tab,
-        # not buried in the Diagnostics log.
         messagebox.showinfo(title, r)
 
     def _selftest_done(self, r):
         messagebox.showinfo("SELFTEST", r)
-        self._on_tab()   # SELFTEST reconfigures the heads + turns MON off -> restore current mode
+        self._on_tab()
 
     # ---------------- main-thread poll ----------------
     def _poll(self):
-        # diagnostics results
         try:
             while True:
                 cb, r = self.result_q.get_nowait()
                 cb(r)
-                self._set_busy(False)   # command done -> re-enable the action buttons
+                self._set_busy(False)
         except queue.Empty:
             pass
-        # sniff frames
         n = 0
         try:
             while True:
@@ -523,8 +628,7 @@ class Console:
         except ValueError:
             ts = 0
         if self.rec_writer:
-            self.rec_writer.writerow([f"{time.time():.3f}", ts, idh, label_for(idh),
-                                      data, "OVR" if ovr else ""])
+            self.rec_writer.writerow([f"{time.time():.3f}", ts, idh, label_for(idh), data, "OVR" if ovr else ""])
         a = self.agg.get(idh)
         if a is None:
             self.agg[idh] = {"count": 1, "last": data, "ts": ts, "period": 0}
@@ -569,7 +673,33 @@ class Console:
                 w.writerow([idh, label_for(idh), a["count"], a["period"], a["last"]])
         messagebox.showinfo("Saved", f)
 
-    # ---------------- firmware tab ----------------
+    def _toggle_record(self):
+        if self.rec_writer:
+            self._stop_record()
+            return
+        f = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
+                                         title="Record session to…")
+        if not f:
+            return
+        self.rec_fh = open(f, "w", newline="")
+        self.rec_writer = csv.writer(self.rec_fh)
+        self.rec_writer.writerow(["host_time", "bus_ms", "id", "label", "data_hex", "flags"])
+        self.btn_rec.config(text="Stop recording")
+        self.status.set("Recording session -> " + f)
+
+    def _stop_record(self):
+        if self.rec_writer:
+            try:
+                self.rec_fh.close()
+            except Exception:
+                pass
+        self.rec_fh = self.rec_writer = None
+        try:
+            self.btn_rec.config(text="Record session")
+        except Exception:
+            pass
+
+    # ---------------- firmware page ----------------
     def _build_fw(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="Firmware")
@@ -587,7 +717,7 @@ class Console:
                   font=("TkDefaultFont", 9, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
         self.btn_flash = ttk.Button(f, text="Flash / Update firmware", command=self._flash_firmware)
         self.btn_flash.pack(anchor="w", padx=8)
-        self.fw_out = tk.Text(f, height=14, wrap="word")
+        self.fw_out = tk.Text(f, height=12, wrap="word")
         self.fw_out.pack(fill="both", expand=True, padx=8, pady=6)
 
     def _on_info(self, r):
@@ -675,37 +805,9 @@ class Console:
         self.mode_lbl.set("—")
         self.status.set("Flash complete — click Connect to reconnect and verify.")
 
-    def _toggle_record(self):
-        """Stream EVERY frame, in order, to a CSV (host_time, bus_ms, id, hex, flags) — the full
-        chronological session timeline for replay/RE, as opposed to Save-grid's aggregate."""
-        if self.rec_writer:
-            self._stop_record()
-            return
-        f = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-                                         title="Record session to…")
-        if not f:
-            return
-        self.rec_fh = open(f, "w", newline="")
-        self.rec_writer = csv.writer(self.rec_fh)
-        self.rec_writer.writerow(["host_time", "bus_ms", "id", "label", "data_hex", "flags"])
-        self.btn_rec.config(text="Stop recording")
-        self.status.set("Recording session -> " + f)
-
-    def _stop_record(self):
-        if self.rec_writer:
-            try:
-                self.rec_fh.close()
-            except Exception:
-                pass
-        self.rec_fh = self.rec_writer = None
-        try:
-            self.btn_rec.config(text="Record session")
-        except Exception:
-            pass
-
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("760x600")
+    root.geometry("780x620")
     Console(root)
     root.mainloop()
