@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.11"
+CONSOLE_VERSION = "0.9.12"
 BUNDLED_FW = "0.9.11"                      # bump in lockstep when the bundled hexes change
 
 
@@ -51,12 +51,32 @@ HEX = {"T4.1": _hex("cerberus-can-teensy41.hex"), "T4.0": _hex("cerberus-can-tee
 MCU = {"T4.1": "TEENSY41", "T4.0": "TEENSY40"}
 
 
+PIO_ENV = {"T4.1": "teensy41", "T4.0": "teensy40"}
+
+
 def find_loader():
     for n in ("teensy_loader_cli.exe", "teensy_loader_cli"):
         f = _firstfile(os.path.join(BASE, "tools", n), os.path.join(BASE, n),
                        os.path.join(BASE, "..", "tools", n), os.path.join(BASE, "..", n)) or shutil.which(n)
         if f:
             return f
+    return None
+
+
+def find_pio():
+    """PlatformIO executable — the fallback flasher when running from source (no teensy_loader_cli)."""
+    home = os.path.expanduser("~")
+    cands = [shutil.which("platformio"), shutil.which("pio"),
+             os.path.join(home, "AppData", "Roaming", "Python", "Python314", "Scripts", "platformio.exe"),
+             os.path.join(home, ".platformio", "penv", "Scripts", "platformio.exe")]
+    return _firstfile(*[c for c in cands if c]) or shutil.which("platformio")
+
+
+def find_repo_root():
+    """Dir holding platformio.ini (so the pio fallback can build/upload from the right place)."""
+    for d in (os.path.join(BASE, ".."), BASE, os.path.join(BASE, "..", "..")):
+        if os.path.isfile(os.path.join(d, "platformio.ini")):
+            return os.path.abspath(d)
     return None
 
 
@@ -865,12 +885,18 @@ class Console:
         if not hexf or not mcu:
             messagebox.showerror("No firmware", f"No bundled hex found for board '{board}'.")
             return
+        # Flash backend: teensy_loader_cli if present (bundled in the .exe), else fall back to
+        # PlatformIO upload (available when running from source — you built the firmware with it).
         loader = find_loader()
+        pio = repo = None
         if not loader:
-            messagebox.showerror("teensy_loader_cli not found",
-                                 "Put teensy_loader_cli.exe next to the Console (or install Teensyduino "
-                                 "so it's on PATH), then try again.")
-            return
+            pio, repo = find_pio(), find_repo_root()
+            if not (pio and repo):
+                messagebox.showerror("No flasher found",
+                                     "Couldn't find teensy_loader_cli OR PlatformIO.\n\n"
+                                     "Either drop teensy_loader_cli.exe next to the Console, or install "
+                                     "PlatformIO (pip install platformio) so the source-build flash path works.")
+                return
         if manual:
             prompt = (f"Flash {os.path.basename(hexf)}  ({mcu})  to a {board} board?\n\n"
                       "Board not auto-detected (blank/never-flashed). After you click Yes, the loader "
@@ -899,10 +925,14 @@ class Console:
                     except Exception:
                         pass
                     time.sleep(1.0)
-                cmd = [loader, f"--mcu={mcu}", "-w", "-v", hexf]
+                if loader:
+                    cmd, cwd = [loader, f"--mcu={mcu}", "-w", "-v", hexf], None
+                else:                                   # PlatformIO fallback (source build)
+                    cmd, cwd = [pio, "run", "-e", PIO_ENV[board], "-t", "upload"], repo
+                    self._post_fw(f"(teensy_loader_cli not found — using PlatformIO upload from {repo})")
                 self._post_fw("$ " + " ".join(cmd))
-                p = subprocess.run(cmd, capture_output=True, text=True,
-                                   timeout=180 if manual else 90)   # manual waits for a button press
+                p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                                   timeout=300 if not loader else (180 if manual else 90))
                 if p.stdout:
                     self._post_fw(p.stdout.strip())
                 if p.stderr:
