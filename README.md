@@ -6,18 +6,19 @@
 </p>
 
 <p align="center">
-  <strong>Teensy 4.1 tri-CAN OBD VCI for VAG — drive an active diagnostic session and
+  <strong>Teensy 4.0/4.1 tri-CAN OBD VCI for VAG — drive an active diagnostic session and
   losslessly log the wire at the same time, from one plug.</strong>
 </p>
 
-> **Status — v0.9.1, pre-1.0.** Head 1 (active diagnostics) is hardware-confirmed on a
-> **2013 Audi A6 C7**: reads VIN, part numbers, the gateway part, and maps **30 modules** over
-> J533 via multi-frame ISO-TP. The dual-head logger firmware is flashed + verified on the board.
-> The **write / CP / TC1796 bench** paths are implemented but bench/experimental — not validated
-> end-to-end on a car. The **OLED** output is unverified (built to the API; no panel on the dev
-> bench). Don't point write features at a car you can't recover.
+> **Status — v0.9.6, pre-1.0.** **Dual-head hardware-validated on a 2013 Audi A6 C7:** both heads
+> read VIN / part numbers / the gateway part over multi-frame ISO-TP, and Head 2 (listen-only)
+> losslessly logged a **live ODIS Component-Protection session** while the dealer tool drove it.
+> Builds for **Teensy 4.0 *and* 4.1**, and ships with a desktop app — **CerberusConsole**
+> (sniff · diagnostics · one-click firmware update). The **write / CP** paths are implemented but
+> bench/experimental — not validated end-to-end on a car. The **OLED** output is built-to-API but
+> not yet panel-verified. Don't point write features at a car you can't recover.
 
-Cerberus turns a Teensy 4.1 (NXP i.MX RT1062, 600 MHz Cortex-M7) into a **request-level** VAG
+Cerberus turns a Teensy 4.0/4.1 (NXP i.MX RT1062, 600 MHz Cortex-M7) into a **request-level** VAG
 VCI: you hand it a UDS request and the *firmware* runs the whole ISO-TP transaction on-device.
 Three independent FlexCAN controllers let it do what a normal single-channel adapter can't —
 **run an active UDS/CP exchange on one head while losslessly logging the unmasked wire on a
@@ -47,18 +48,38 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
 - **Dual-head capture** — active Head 1 + always-on listen-only Head 2 logger (`MON`), backed by
   a **256 KB OCRAM ring buffer** so a USB stall or a long blocking transaction never drops frames
   (`MON:stat` reports peak/dropped).
+- **Modes** — `MODE:vci|sniff|dual`: one command sets both heads. **`sniff` = BOTH heads
+  listen-only = zero bus footprint**, safe to log a live ODIS/dealer session without touching it.
+- **`SELFTEST`** — factory/bring-up QC: loopback both controller cores + a Head-1→Head-2 wire check,
+  PASS/FAIL, no extra gear. **`REBOOT`** drops to the bootloader so the host can flash.
 - **SLCAN (Lawicel) mode** — drops into the wider ecosystem: SavvyCAN, python-can, `slcand`→SocketCAN.
 - **`EMU` responder mode** — emulate a module (UDS server with rule-matched responses) to probe how
   J533 / a tester reacts. Bench play; needs a 2nd node to drive it.
 - **Optional SSD1306 OLED HUD** (auto-detected) — live **mode** title + per-head **VU bars**.
+- **Builds for Teensy 4.0 *and* 4.1** — same features; `INFO` reports the board so the app flashes
+  the right hex. (4.0 = compact 2-head unit; 4.1 = solder-friendly Head 3 + SD/ethernet headroom.)
+
+## Desktop app — CerberusConsole
+
+A plug-and-go GUI (`host/cerberus_console.py`, pyserial + tkinter — **no Simos-Suite needed**):
+
+- **Sniff** — live passive trace + a chronological **Record session** CSV (every frame, in order).
+- **Diagnostics** — module picker; Read VIN / Part #; **Read + Clear DTCs** (decoded).
+- **Firmware** — running version + board vs bundled, **one-click flash/update** (via `REBOOT` +
+  `teensy_loader_cli`, matching hex/`--mcu` per detected board).
+
+Switching tabs sets the right `MODE` automatically; version + board show in the title bar; it
+auto-reconnects if a USB link drops. **Single-file build:** `cd host && build_exe.bat` →
+`dist/CerberusConsole.exe` (bundles both hexes + the flasher — see [host/BUILD-EXE.md](host/BUILD-EXE.md)).
 
 ## Flash
 
 ```bash
-# A) no toolchain: open firmware/cerberus-can-teensy41.hex in Teensy Loader (INFO shows the version)
-# B) from source (PlatformIO):
+# A) one-click: CerberusConsole -> Firmware tab -> Flash (auto-picks the hex for your board)
+# B) no toolchain: open firmware/cerberus-can-teensy4{0,1}.hex in Teensy Loader (INFO shows version + board)
+# C) from source (PlatformIO):
 pip install platformio
-python -m platformio run -t upload
+python -m platformio run -e teensy41 -t upload     # or:  -e teensy40
 ```
 
 ## Wiring
@@ -91,17 +112,24 @@ CANX:<bus>:<ID>:<HEX>[:ms]    send one frame then listen ms        (low-level se
 SCAN:<bus>[:lo:hi[:win]]      active responder sweep (TesterPresent)
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
+MODE:vci|sniff|dual           set both heads (sniff = BOTH listen-only, zero footprint); MODE reports
+HEAD2:active|lom              flip Head 2 between a 2nd active VCI and the listen-only logger
+H2TEST                        Head-1-listens-while-Head-2-transmits TX-path self-test
+SELFTEST                      QC: CAN1/CAN2 loopback + H1->H2 wire check -> PASS/FAIL
 EMU:on:<bus>:<REQ>:<RESP>     emulate a module (UDS responder)     EMU:add:<prefix>:<resp> rules
 TP:<bus>:<TX>:<ms> | TP:STOP  background TesterPresent keep-alive
 STATS:<bus>                   CAN error counters / bus health
 SLCAN                         enter Lawicel mode on Head 1 (reset to exit)
-INFO  /  PING
+REBOOT                        jump to the bootloader (host firmware flash)
+INFO  /  PING                 INFO -> CERBERUS:<ver> board=T4.0|T4.1 …
 
 -> OK:<resphex> | ERR:<reason> | RX:<ms>:<id>:<data> … DONE:<n>
 ```
 
 ## Host scripts (`host/`)
 
+- **`cerberus_console.py`** — the **CerberusConsole** desktop app (above). Start here. `build_exe.bat`
+  freezes it to a single `.exe`. (`cerberus_sniff_gui.py` is the older minimal sniffer, now superseded.)
 - **`cerberus_sniff.py`** — live `SNIFF`/`MON` capture, per-ID summary, CSV out.
 - **`cerberus_decode.py`** — turn a capture into labeled UDS/KWP exchanges (ISO-TP **+ VW TP 2.0**),
   flagging the CP-relevant services (TrainICA, `0x00BE` IKA write, SecurityAccess).
@@ -117,14 +145,18 @@ mapped and named the whole car off the gateway.
 
 - [x] Head 1 @ 500 k — request-level ISO-TP/UDS read + write
 - [x] Hardware listen-only sniff (LOM)
-- [x] Dual-head: active VCI + always-on ring-buffered logger (`MON`)
+- [x] Dual-head: active VCI + always-on ring-buffered logger (`MON`) — **validated on a live car**
+- [x] `MODE` vci/sniff/dual — zero-footprint sniff alongside a dealer/ODIS tool
+- [x] Captured a **live ODIS Component-Protection session** via the dual tap
+- [x] `SELFTEST` QC + `REBOOT` host-flash; **Teensy 4.0 + 4.1** dual-target builds
+- [x] **CerberusConsole** desktop app (sniff · diagnostics · one-click firmware) + single-`.exe` build
 - [x] SLCAN ecosystem interop (SavvyCAN / python-can / SocketCAN)
 - [x] OLED status HUD (mode + VU bars)
-- [x] Simos-Suite drives Cerberus (dual-head driver + CP Capture live view)
-- [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
+- [x] Simos-Suite drives Cerberus (dual-head driver + CP Capture live view + `set_mode`)
 - [x] `EMU` responder mode — fake a module to probe the gateway / CP from the other side
+- [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
 - [ ] K-line / KWP2000 interface for older (pre-CAN) cars — OBD-12 V powered + a K-line transceiver
-- [ ] On-device SD logging
+- [ ] On-device SD logging (RTC + coin cell for real timestamps)
 
 ## Related
 
