@@ -20,8 +20,8 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.8"
-BUNDLED_FW = "0.9.8"                       # bump in lockstep when the bundled hexes change
+CONSOLE_VERSION = "0.9.10"
+BUNDLED_FW = "0.9.10"                      # bump in lockstep when the bundled hexes change
 
 
 def _base():
@@ -793,7 +793,7 @@ class Console:
         self.fw_out.pack(fill="both", expand=True, padx=8, pady=6)
 
     def _on_info(self, r):
-        self.fw_ver, self.fw_board = "?", "?"
+        self.fw_ver, self.fw_board, self.product = "?", "?", "CerberusCAN"
         if r.startswith("CERBERUS:"):
             toks = r.split()
             head = toks[0].split(":", 1)
@@ -802,7 +802,9 @@ class Console:
             for t in toks:
                 if t.startswith("board="):
                     self.fw_board = t.split("=", 1)[1]
-        self.root.title(f"CerberusCAN Console  v{CONSOLE_VERSION}  —  {self.fw_board} fw {self.fw_ver}")
+                elif t.startswith("product="):
+                    self.product = t.split("=", 1)[1]   # Cerberus (4.1) | Orthrus (4.0)
+        self.root.title(f"{self.product} Console  v{CONSOLE_VERSION}  —  {self.fw_board} fw {self.fw_ver}")
         self._refresh_fw_tab()
 
     def _refresh_fw_tab(self):

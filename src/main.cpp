@@ -763,11 +763,11 @@ void handleLine(String line){
   if (kw=="INFO"){
     Serial.print("CERBERUS:"); Serial.print(CERBERUS_VERSION);
 #if defined(ARDUINO_TEENSY41)
-    Serial.print(" board=T4.1");
+    Serial.print(" board=T4.1 product=Cerberus");   // 4.1 flagship: KWP + CAN + DoIP
 #elif defined(ARDUINO_TEENSY40)
-    Serial.print(" board=T4.0");
+    Serial.print(" board=T4.0 product=Orthrus");     // 4.0 sibling: KWP + CAN (no DoIP — no Ethernet)
 #else
-    Serial.print(" board=T4.x");
+    Serial.print(" board=T4.x product=Cerberus");
 #endif
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
     Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
