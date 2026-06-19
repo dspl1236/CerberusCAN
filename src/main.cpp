@@ -561,7 +561,7 @@ static int split(const String& s, char sep, String* parts, int maxp){
 // BENCH-UNTESTED — needs the transceiver + a pre-CAN VAG on hand. Protocol per ISO 14230-2/-3.
 #define KL Serial2
 static const int      KL_TX = 8, KL_RX = 7;
-static const uint32_t KL_BAUD = 10400;
+static uint32_t kl_baud = 10400;              // K-line UART baud — 10400 default; 9600 for M232/AAN (KWP:baud:9600)
 static bool    kl_up  = false;
 static uint8_t kl_tgt = 0x01;                 // ECU address (engine = 0x01, per KWPBridge), set by init
 
@@ -594,7 +594,7 @@ static void kl_fastinit(uint8_t target){      // ISO 14230 fast init = line wigg
   digitalWrite(KL_TX,HIGH); delay(300);       // idle high
   digitalWrite(KL_TX,LOW);  delay(25);        // 25ms low
   digitalWrite(KL_TX,HIGH); delay(25);        // 25ms high
-  KL.begin(KL_BAUD); delay(300);              // ECU sync wait (per KWPBridge KWP2000_FAST_INIT_WAIT)
+  KL.begin(kl_baud); delay(300);              // ECU sync wait (per KWPBridge KWP2000_FAST_INIT_WAIT)
   while(KL.available()) KL.read();
   kl_up=true;
   Serial.println("OK:kwp-fast-ready (now send the session: KWP:1089 for ME7, or KWP:81 StartComm)");
@@ -606,7 +606,7 @@ static void kl_slowinit(uint8_t addr){        // 5-baud init: bit-bang the addr 
   digitalWrite(KL_TX,LOW);  delay(200);                       // start bit
   for(int i=0;i<8;i++){ digitalWrite(KL_TX,(addr>>i)&1); delay(200); }   // 8 data bits, LSB first
   digitalWrite(KL_TX,HIGH); delay(200);                       // stop bit
-  KL.begin(KL_BAUD);
+  KL.begin(kl_baud);
   uint8_t r[24]; int n=kl_recv(r,24,600); kl_up=(n>0);
   kl_dump("OK:kwp-slowinit ", r, n);
 }
@@ -628,6 +628,77 @@ static void kl_kwp(const uint8_t* data, int len){  // framed KWP2000 request -> 
   Serial.println();
 }
 
+// ---- KW1281 (older VAG block protocol) — Head 3 byte engine. Timing-critical -> must run on the
+// Teensy (a host-over-USB round-trip per byte is too slow for the complement-ACK). Implemented fresh
+// per the protocol (NOT copied from KWPBridge, which stubs the ACK). BENCH-UNTESTED; delays need
+// tuning against a real KW1281 ECU. Block = [len][counter][title][data..][0x03]; every byte is
+// complement-acked by the other side EXCEPT the 0x03 terminator. ----
+static bool    k81_up  = false;
+static uint8_t k81_cnt = 0;                    // shared block counter (ECU sets initial; ++ per block)
+
+static bool k81_wb(uint8_t b, bool ack){       // write byte (swallow echo); if ack, await + verify ~b
+  while(KL.available()) KL.read();
+  KL.write(b); KL.flush();
+  uint32_t t=millis(); while(millis()-t<25){ if(KL.available()){ KL.read(); break; } }   // own echo
+  if(!ack) return true;
+  t=millis(); while(millis()-t<300){ if(KL.available()) return KL.read()==(uint8_t)(~b); }
+  return false;
+}
+static int k81_rb(bool ack, uint32_t to){      // read byte from ECU; if ack, send ~b back (swallow echo)
+  uint32_t t=millis();
+  while(millis()-t<to){
+    if(KL.available()){
+      uint8_t b=KL.read();
+      if(ack){ delay(5); KL.write((uint8_t)(~b)); KL.flush();
+        uint32_t e=millis(); while(millis()-e<25){ if(KL.available()){ KL.read(); break; } } }
+      return b;
+    }
+  }
+  return -1;
+}
+static bool k81_tx(uint8_t title, const uint8_t* data, int n){   // send a block; 0x03 not acked
+  if(!k81_wb((uint8_t)(n+3),true)) return false;                 // len = counter+title+data+ETX
+  k81_cnt++;
+  if(!k81_wb(k81_cnt,true)) return false;
+  if(!k81_wb(title,true)) return false;
+  for(int i=0;i<n;i++) if(!k81_wb(data[i],true)) return false;
+  return k81_wb(0x03,false);
+}
+static int k81_rx(uint8_t* data, int maxn, uint8_t* title){      // receive a block -> data length
+  int len=k81_rb(true,500); if(len<0) return -1;
+  int cnt=k81_rb(true,300); if(cnt<0) return -1; k81_cnt=(uint8_t)cnt;
+  int ttl=k81_rb(true,300); if(ttl<0) return -1; *title=(uint8_t)ttl;
+  int ndata=len-3, got=0;
+  for(int i=0;i<ndata;i++){ int b=k81_rb(true,300); if(b<0) return -1; if(got<maxn) data[got++]=(uint8_t)b; }
+  k81_rb(false,300);                                             // ETX 0x03 — read, not acked
+  return got;
+}
+static void k81_dump(const char* tag, uint8_t title, const uint8_t* d, int n){
+  Serial.print(tag); Serial.print("title="); if(title<16)Serial.print('0'); Serial.print(title,HEX);
+  Serial.print(" data=");
+  for(int i=0;i<n;i++){ if(d[i]<16)Serial.print('0'); Serial.print(d[i],HEX); }
+  Serial.println();
+}
+static void k81_init(uint8_t addr){            // 5-baud addr -> sync 0x55 + KB1 + KB2 -> reply ~KB2
+  KL.end(); pinMode(KL_TX,OUTPUT);
+  digitalWrite(KL_TX,HIGH); delay(300);
+  digitalWrite(KL_TX,LOW);  delay(200);
+  for(int i=0;i<8;i++){ digitalWrite(KL_TX,(addr>>i)&1); delay(200); }
+  digitalWrite(KL_TX,HIGH); delay(200);
+  KL.begin(kl_baud);
+  int sync=-1,kb1=-1,kb2=-1; uint32_t t=millis();
+  while(millis()-t<700 && sync<0){ if(KL.available()) sync=KL.read(); }
+  t=millis(); while(millis()-t<300 && kb1<0){ if(KL.available()) kb1=KL.read(); }
+  t=millis(); while(millis()-t<300 && kb2<0){ if(KL.available()) kb2=KL.read(); }
+  if(sync!=0x55 || kb2<0){ Serial.print("ERR:kw1281-init (sync=0x"); Serial.print(sync,HEX); Serial.println(")"); k81_up=false; return; }
+  delay(30);
+  KL.write((uint8_t)(~kb2)); KL.flush();
+  uint32_t e=millis(); while(millis()-e<25){ if(KL.available()){ KL.read(); break; } }   // own echo
+  k81_up=true; k81_cnt=0;
+  Serial.print("OK:kw1281-init sync=55 kb1="); if(kb1<16)Serial.print('0'); Serial.print(kb1,HEX);
+  Serial.print(" kb2="); if(kb2<16)Serial.print('0'); Serial.println(kb2,HEX);
+}
+
 void handleLine(String line){
   line.trim();
   if (line.length()==0) return;
@@ -646,6 +717,10 @@ void handleLine(String line){
   }
   if (kw=="KWP"){      // Head 3 — K-line / KWP2000 for pre-CAN VAG (Serial2 + K-line transceiver)
     if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); kl_up=false; Serial.println("OK:kwp-off"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("baud")){   // 10400 default; 9600 for M232/AAN
+      if (np<3){ Serial.println("ERR:format (KWP:baud:<n>)"); return; }
+      kl_baud = strtoul(parts[2].c_str(),nullptr,10);
+      Serial.print("OK:kwp-baud="); Serial.println(kl_baud); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("fast")){
       kl_fastinit(np>=3 ? (uint8_t)strtoul(parts[2].c_str(),nullptr,16) : 0x01); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("slow")){
@@ -659,6 +734,29 @@ void handleLine(String line){
       uint8_t d[264]; int n=hexBytes(parts[1],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
       kl_kwp(d,n); return; }
     Serial.println("ERR:format (KWP:fast[:tgt] | KWP:slow:<addr> | KWP:<hex> | KWP:raw:<hex> | KWP:off)");
+    return;
+  }
+  if (kw=="K81"){     // Head 3 — KW1281 block protocol for older pre-CAN VAG. BENCH-UNTESTED.
+    if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); k81_up=false; Serial.println("OK:k81-off"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("init")){
+      if (np<3){ Serial.println("ERR:format (K81:init:<addr>)"); return; }
+      k81_init((uint8_t)strtoul(parts[2].c_str(),nullptr,16)); return; }
+    if (!k81_up){ Serial.println("ERR:k81-not-initialized (K81:init:<addr> first)"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("read")){   // read the next ECU block
+      uint8_t d[64], ttl=0; int n=k81_rx(d,64,&ttl);
+      if(n<0){ Serial.println("ERR:no-block"); return; } k81_dump("OK:",ttl,d,n); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("ack")){    // send ACK block 0x09, read reply
+      if(!k81_tx(0x09,nullptr,0)){ Serial.println("ERR:tx-ack"); return; }
+      uint8_t d[64], ttl=0; int n=k81_rx(d,64,&ttl);
+      if(n<0){ Serial.println("ERR:no-block"); return; } k81_dump("OK:",ttl,d,n); return; }
+    if (np>=3 && parts[1].equalsIgnoreCase("block")){  // K81:block:<title>[:<datahex>] -> send + read reply
+      uint8_t title=(uint8_t)strtoul(parts[2].c_str(),nullptr,16);
+      uint8_t d[64]; int dn=0;
+      if(np>=4){ dn=hexBytes(parts[3],d,sizeof(d)); if(dn<0){ Serial.println("ERR:hex"); return; } }
+      if(!k81_tx(title,d,dn)){ Serial.println("ERR:tx-block"); return; }
+      uint8_t r[64], ttl=0; int n=k81_rx(r,64,&ttl);
+      if(n<0){ Serial.println("ERR:no-block"); return; } k81_dump("OK:",ttl,r,n); return; }
+    Serial.println("ERR:format (K81:init:<addr> | K81:read | K81:ack | K81:block:<title>[:<hex>] | K81:off)");
     return;
   }
   if (kw=="SLCAN"){ slcan_mode=true; Serial.println("OK:slcan (Lawicel mode on Head 1; reset board to exit)"); return; }
@@ -967,7 +1065,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|K81|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
