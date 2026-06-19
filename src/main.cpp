@@ -564,6 +564,7 @@ static const int      KL_TX = 8, KL_RX = 7;
 static uint32_t kl_baud = 10400;              // K-line UART baud — 10400 default; 9600 for M232/AAN (KWP:baud:9600)
 static bool    kl_up  = false;
 static uint8_t kl_tgt = 0x01;                 // ECU address (engine = 0x01, per KWPBridge), set by init
+static bool    kl_passthru = false;           // transparent "dumb KKL cable" mode (e.g. for NefMoto) — reset to exit
 
 static uint8_t kl_cks(const uint8_t* b, int n){ uint16_t s=0; for(int i=0;i<n;i++) s+=b[i]; return (uint8_t)s; }
 
@@ -721,6 +722,12 @@ void handleLine(String line){
       if (np<3){ Serial.println("ERR:format (KWP:baud:<n>)"); return; }
       kl_baud = strtoul(parts[2].c_str(),nullptr,10);
       Serial.print("OK:kwp-baud="); Serial.println(kl_baud); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("passthrough")){   // transparent dumb-KKL-cable mode (NefMoto etc.)
+      if (np>=3) kl_baud = strtoul(parts[2].c_str(),nullptr,10);   // K-line baud (10400 default; KWP:passthrough:9600)
+      KL.end(); KL.begin(kl_baud); while(KL.available()) KL.read();
+      kl_passthru = true;
+      Serial.print("OK:kwp-passthrough baud="); Serial.print(kl_baud);
+      Serial.println(" (raw K-line<->USB; host drives the protocol; reset board to exit)"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("fast")){
       kl_fastinit(np>=3 ? (uint8_t)strtoul(parts[2].c_str(),nullptr,16) : 0x01); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("slow")){
@@ -733,7 +740,7 @@ void handleLine(String line){
     if (np>=2){   // KWP:<hex> — framed request -> raw response
       uint8_t d[264]; int n=hexBytes(parts[1],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
       kl_kwp(d,n); return; }
-    Serial.println("ERR:format (KWP:fast[:tgt] | KWP:slow:<addr> | KWP:<hex> | KWP:raw:<hex> | KWP:off)");
+    Serial.println("ERR:format (KWP:fast[:tgt] | KWP:slow:<addr> | KWP:passthrough[:baud] | KWP:<hex> | KWP:raw:<hex> | KWP:off)");
     return;
   }
   if (kw=="K81"){     // Head 3 — KW1281 block protocol for older pre-CAN VAG. BENCH-UNTESTED.
@@ -1077,6 +1084,11 @@ void setup(){
 
 String inbuf;
 void loop(){
+  if (kl_passthru){                                   // transparent K-line <-> USB byte bridge (dumb KKL
+    while (KL.available())     Serial.write(KL.read());  // cable for NefMoto etc.): no framing, no echo
+    while (Serial.available()) KL.write(Serial.read());  // suppression — the host owns the protocol. Reset to exit.
+    return;
+  }
   while (Serial.available()){
     char c = Serial.read();
     if (c=='\n' || c=='\r'){

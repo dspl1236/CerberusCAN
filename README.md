@@ -129,6 +129,7 @@ STATS:<bus>                   CAN error counters / bus health
 SLCAN                         enter Lawicel mode on Head 1 (reset to exit)
 KWP:fast[:tgt] | slow:<addr>  Head 3 K-line / KWP2000 init (ISO 14230 fast / 5-baud slow)
 KWP:<hex> | raw:<hex> | off   framed KWP request / raw bytes / close  (pre-CAN VAG)
+KWP:passthrough[:baud]        transparent "dumb KKL cable" — raw K-line<->USB (reset to exit); for NefMoto et al.
 REBOOT                        jump to the bootloader (host firmware flash)
 INFO  /  PING                 INFO -> CERBERUS:<ver> board=T4.0|T4.1 …
 
@@ -166,6 +167,9 @@ mapped and named the whole car off the gateway.
 - [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
 - [ ] **K-line / KWP2000** (Head 3, pre-CAN VAG) — **firmware built** (`KWP`: ISO 14230 fast + 5-baud
   init, framed requests); **bench-untested** pending the K-line transceiver + a pre-CAN car
+- [x] **Transparent K-line passthrough** (`KWP:passthrough`) — Cerberus as a dumb KKL cable so PC tools
+  that own the protocol (e.g. **NefMoto**) can drive it; **bench-untested**, fast-init focus (5-baud/break
+  init still TBD — see note below)
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
 
 ## The line — Typhon's hounds
