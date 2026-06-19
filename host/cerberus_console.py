@@ -76,6 +76,10 @@ try:
     import kline_decode          # K-line VAG fault-location text (didb/)
 except Exception:
     kline_decode = None
+try:
+    import formula               # K-line measuring-block scaling
+except Exception:
+    formula = None
 
 # Sniff-grid CAN-ID labels
 LABELS = {
@@ -242,7 +246,17 @@ class Console:
         self._action(top, "Read Faults", self._kwp_faults)
         self._action(top, "Clear Faults", self._kwp_clear)
         ttk.Button(top, text="Clear log", command=lambda: self.kl_out.delete("1.0", "end")).pack(side="right", padx=2)
-        self.kl_out = tk.Text(f, height=18, wrap="word")
+        top2 = ttk.Frame(f, padding=(4, 0))
+        top2.pack(fill="x")
+        self.kl_proto = "kwp"           # which protocol last inited -> how Read-MB frames the request
+        ttk.Label(top2, text="Measuring group:").pack(side="left")
+        self.kl_group = tk.StringVar(value="1")
+        ttk.Spinbox(top2, from_=0, to=255, width=5, textvariable=self.kl_group).pack(side="left", padx=4)
+        self._action(top2, "Read MB", self._read_mb)
+        ttk.Label(top2, text="      KW1281:").pack(side="left")
+        self._action(top2, "Init", self._k81_init)
+        self._action(top2, "Read block", self._k81_read)
+        self.kl_out = tk.Text(f, height=16, wrap="word")
         self.kl_out.pack(fill="both", expand=True, padx=6, pady=4)
 
     def _action(self, parent, text, cmd):
@@ -523,10 +537,68 @@ class Console:
         self.kl_out.see("end")
 
     def _kwp_fast(self):
+        self.kl_proto = "kwp"
         self._diag(f"KWP:fast:{self._kl_addr()}", self._kl_show, 3.0)
 
     def _kwp_slow(self):
+        self.kl_proto = "kwp"
         self._diag(f"KWP:slow:{self._kl_addr()}", self._kl_show, 5.0)
+
+    def _k81_init(self):
+        self.kl_proto = "kw1281"
+        self._diag(f"K81:init:{self._kl_addr()}", self._kl_show, 6.0)
+
+    def _k81_read(self):
+        self._diag("K81:read", lambda r: self._kl_show(self._fmt_block(r)), 4.0)
+
+    def _read_mb(self):
+        try:
+            g = int(self.kl_group.get()) & 0xFF
+        except ValueError:
+            g = 1
+        if self.kl_proto == "kw1281":
+            self._diag(f"K81:block:29:{g:02X}", lambda r: self._kl_show(self._fmt_block(r, g)), 5.0)
+        else:
+            self._diag(f"KWP:21{g:02X}", lambda r: self._kl_show(self._fmt_mb(r, g)), 5.0)
+
+    def _cells(self, payload):
+        """Decode a measuring block's 3-byte [formula][A][B] cells via formula.py."""
+        out = []
+        for i in range(0, (len(payload) // 3) * 3, 3):
+            f, a, b = payload[i], payload[i + 1], payload[i + 2]
+            if formula:
+                _, _, disp = formula.decode_cell(f, a, b)
+            else:
+                disp = f"raw {a*256+b} (fmt=0x{f:02X})"
+            out.append(f"      cell {i//3+1}: {disp}")
+        return out or ["      (no cells)"]
+
+    def _fmt_mb(self, r, g):
+        """KWP2000 0x21 measuring block: response payload [0x61][localid][cells...]."""
+        if r.startswith("OK:"):
+            try:
+                b = bytes.fromhex(r[3:])
+                if len(b) >= 2 and b[0] == 0x61:
+                    return f"Measuring group {g}:\n" + "\n".join(self._cells(b[2:]))
+            except ValueError:
+                pass
+        return f"Measuring group {g}: {r}"
+
+    def _fmt_block(self, r, g=None):
+        """KW1281 block dump: 'OK:title=XX data=...' — for measuring groups (0xE7), decode cells."""
+        if r.startswith("OK:title="):
+            body = r[3:]
+            title = body.split()[0].split("=")[1] if "=" in body else "?"
+            data_hex = body.split("data=")[1] if "data=" in body else ""
+            try:
+                data = bytes.fromhex(data_hex)
+            except ValueError:
+                data = b""
+            if title.upper() == "E7" and data:        # measuring-value response
+                head = f"Measuring group {g}:" if g is not None else "Measuring values:"
+                return head + "\n" + "\n".join(self._cells(data))
+            return f"block title=0x{title} data={data_hex}"
+        return f"block: {r}"
 
     def _kwp_send(self, hexreq, what):
         self._diag(f"KWP:{hexreq}", lambda r: self._kl_show(f"{what}: {r}"), 4.0)
