@@ -629,6 +629,34 @@ static void kl_kwp(const uint8_t* data, int len){  // framed KWP2000 request -> 
   Serial.println();
 }
 
+// ---- Dual-USB raw K-line bridge: SerialUSB1 (the 2nd CDC port) is an ALWAYS-DUMB KKL cable.
+// When a host app (NefMoto / VCDS-dumb / etc.) opens that 2nd COM port, Cerberus transparently
+// bridges raw bytes USB2<->K-line (Serial2) — no framing, no echo-swallow, the host owns the
+// protocol. The smart KWP/KW1281 path on the PRIMARY port yields the K-line while this is active
+// and reclaims it automatically when the 2nd port closes (no replug). No buffer needed: K-line is
+// ~10.4 kbaud half-duplex and USB CDC backpressures losslessly; writes are non-blocking so a slow
+// K-line drain never stalls loop()/the CAN logger. ----
+static bool kl_ext_owned = false;               // true while the 2nd USB port owns the K-line
+#if defined(USB_DUAL_SERIAL) || defined(USB_TRIPLE_SERIAL)
+static bool kl_bridge_on = false;
+static void kline_bridge(){
+  bool host = (bool)SerialUSB1;                 // 2nd CDC port open by the host (DTR asserted)?
+  if (host && !kl_bridge_on){                   // just opened -> claim the K-line for the raw bridge
+    KL.end(); KL.begin(kl_baud); while(KL.available()) KL.read();
+    kl_bridge_on = true; kl_ext_owned = true;
+  } else if (!host && kl_bridge_on){            // just closed -> hand the K-line back to smart KWP
+    kl_bridge_on = false; kl_ext_owned = false;
+  }
+  if (!kl_bridge_on) return;
+  for (int n = SerialUSB1.available(); n > 0 && KL.availableForWrite() > 0; --n)
+    KL.write(SerialUSB1.read());                // USB2 -> K-line  (non-blocking)
+  for (int m = KL.available(); m > 0 && SerialUSB1.availableForWrite() > 0; --m)
+    SerialUSB1.write(KL.read());                // K-line -> USB2  (non-blocking)
+}
+#else
+static void kline_bridge(){}                    // single-serial build: no 2nd port, no-op
+#endif
+
 // ---- KW1281 (older VAG block protocol) — Head 3 byte engine. Timing-critical -> must run on the
 // Teensy (a host-over-USB round-trip per byte is too slow for the complement-ACK). Implemented fresh
 // per the protocol (NOT copied from KWPBridge, which stubs the ACK). BENCH-UNTESTED; delays need
@@ -717,6 +745,7 @@ void handleLine(String line){
     return;
   }
   if (kw=="KWP"){      // Head 3 — K-line / KWP2000 for pre-CAN VAG (Serial2 + K-line transceiver)
+    if (kl_ext_owned){ Serial.println("ERR:kline-busy (raw passthrough active on the 2nd USB port — close that app to use smart KWP)"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); kl_up=false; Serial.println("OK:kwp-off"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("baud")){   // 10400 default; 9600 for M232/AAN
       if (np<3){ Serial.println("ERR:format (KWP:baud:<n>)"); return; }
@@ -744,6 +773,7 @@ void handleLine(String line){
     return;
   }
   if (kw=="K81"){     // Head 3 — KW1281 block protocol for older pre-CAN VAG. BENCH-UNTESTED.
+    if (kl_ext_owned){ Serial.println("ERR:kline-busy (raw passthrough active on the 2nd USB port)"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); k81_up=false; Serial.println("OK:k81-off"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("init")){
       if (np<3){ Serial.println("ERR:format (K81:init:<addr>)"); return; }
@@ -779,7 +809,11 @@ void handleLine(String line){
     Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
     Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
     Serial.print(" tmo="); Serial.print(UDS_TIMEOUT_MS);
-    Serial.print(" respmax=4096"); Serial.print(" monring="); Serial.print(MON_RING); Serial.println();
+    Serial.print(" respmax=4096"); Serial.print(" monring="); Serial.print(MON_RING);
+#if defined(USB_DUAL_SERIAL) || defined(USB_TRIPLE_SERIAL)
+    Serial.print(" kline2=raw");      // 2nd USB CDC port is an always-dumb K-line KKL cable
+#endif
+    Serial.println();
     return;
   }
   if (kw=="STATS"){
@@ -1107,6 +1141,7 @@ void loop(){
     pump_mon();                                       // always-on Head-2 background logger
     emu_service();                                    // module emulation responder (Head 1)
     tp_service();                                     // native: non-blocking TesterPresent keep-alive
+    kline_bridge();                                   // 2nd USB port = always-dumb K-line KKL cable
   }
   oled_update();                                      // throttled OLED HUD (no-op if no panel)
 }
