@@ -110,14 +110,18 @@ jobs:
 
       - name: Prune old releases            # keep only the newest KEEP_RELEASES console-v*
         if: steps.decide.outputs.release == 'true'
+        continue-on-error: true             # best-effort cleanup: never fail the release over it
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release list --limit 100 --json tagName,createdAt \
-            | jq -r --argjson keep ${KEEP_RELEASES} \
+          set +e                            # don't let -e / pipefail abort on a single delete
+          old=$(gh release list --limit 100 --json tagName,createdAt \
+            | jq -r --argjson keep "${KEEP_RELEASES}" \
                 '[.[] | select(.tagName|startswith("console-v"))]
-                 | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName' \
-            | while read -r t; do
-                [ -n "$t" ] && { echo "pruning $t"; gh release delete "$t" --cleanup-tag --yes; }
-              done
+                 | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName')
+          for t in $old; do
+            echo "pruning $t"
+            gh release delete "$t" --cleanup-tag --yes || echo "  (could not delete $t — skipping)"
+          done
+          exit 0
