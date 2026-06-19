@@ -38,10 +38,24 @@ def pcode_text(code: str) -> str:
     return p.get(code.upper(), "")
 
 
+# high-nibble fallback for failure-type bytes that didn't reach consensus
+_FTB_GROUPS = {
+    0x0: "general failure", 0x1: "electrical/circuit", 0x2: "signal range/performance",
+    0x3: "signal timing/frequency", 0x4: "ECU internal/memory", 0x5: "configuration/calibration",
+    0x6: "signal monitoring/plausibility", 0x7: "actuator/mechanical", 0x8: "bus/network",
+    0x9: "component/system operation", 0xA: "calibration/parameter memory",
+}
+
+
 def ftb_text(ftb: int) -> str:
-    """Meaning of the failure-type byte (e.g. 0x11 -> 'short to ground'). '' if unknown."""
+    """Meaning of the failure-type byte (e.g. 0x11 -> 'Circuit short to ground'). Falls back to the
+    high-nibble group meaning (with a '?') for bytes without a consensus entry; '' if neither."""
     _, f = _load()
-    return f.get(f"{ftb:02X}", "")
+    exact = f.get(f"{ftb:02X}", "")
+    if exact:
+        return exact
+    grp = _FTB_GROUPS.get((ftb >> 4) & 0xF)
+    return f"{grp}?" if grp else ""
 
 
 def describe(code: str, ftb: int) -> str:
