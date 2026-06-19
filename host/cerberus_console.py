@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.17"
+CONSOLE_VERSION = "0.9.18"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -327,13 +327,13 @@ class Console:
 
     def _probe_port(self, dev, timeout=1.6):
         """Synchronously test whether dev is the Cerberus COMMAND port: open, send INFO, read
-        directly for a 'CERBERUS:' reply. Returns the INFO line or None. Direct blocking read —
-        no async read-loop / queue timing — so it's reliable in the frozen exe (where the old timed
-        auto-hop raced and bounced off the good port). The raw K-line CDC answers nothing -> None."""
+        directly for a 'CERBERUS:' reply. Returns (open_serial, info_line) on success — the port is
+        left OPEN and handed to _connect (no close/reopen race) — or (None, None). Direct blocking
+        read, no async/queue timing, so it's reliable in the frozen exe. Raw K-line CDC -> (None,None)."""
         try:
             s = serial.Serial(dev, 115200, timeout=0.2)
         except Exception:
-            return None
+            return None, None
         try:
             time.sleep(0.25)
             s.reset_input_buffer()
@@ -345,15 +345,20 @@ class Console:
                 if chunk:
                     buf += chunk
                     if b"CERBERUS:" in buf:
+                        info = ""
                         for line in buf.replace(b"\r", b"\n").split(b"\n"):
                             if b"CERBERUS:" in line:
-                                return line.decode("ascii", "replace").strip()
-            return None
-        finally:
+                                info = line.decode("ascii", "replace").strip()
+                                break
+                        return s, info        # leave OPEN, hand off to _connect
+            s.close()
+            return None, None
+        except Exception:
             try:
                 s.close()
             except Exception:
                 pass
+            return None, None
 
     def _connect_smart(self):
         """Find the port that actually answers INFO (the smart command port) and connect to THAT.
@@ -364,9 +369,10 @@ class Console:
         for dev in order:
             self.status.set(f"Probing {dev} for the Cerberus command port…")
             self.root.update_idletasks()
-            if self._probe_port(dev):
+            ser, info = self._probe_port(dev)
+            if ser:
                 self.port.set(dev)
-                self._connect()
+                self._connect(ser=ser, info=info)
                 return
         messagebox.showerror("No Cerberus found",
             "No COM port answered INFO.\n\n"
@@ -375,18 +381,25 @@ class Console:
             "Then try Connect again.")
         self.status.set("No Cerberus command port found — see the dialog.")
 
-    def _connect(self):
+    def _connect(self, ser=None, info=None):
+        if ser is None:                         # manual path (no pre-probed handle)
+            try:
+                ser = serial.Serial(self.port.get(), 115200, timeout=0.2)
+            except Exception as e:
+                messagebox.showerror("Connect failed", str(e))
+                return
+            time.sleep(0.4)
+        self.ser = ser
         try:
-            self.ser = serial.Serial(self.port.get(), 115200, timeout=0.2)
-        except Exception as e:
-            messagebox.showerror("Connect failed", str(e))
-            return
-        time.sleep(0.4)
-        self.ser.reset_input_buffer()
+            self.ser.reset_input_buffer()
+        except Exception:
+            pass
         self.running = True
         threading.Thread(target=self._read_loop, daemon=True).start()
         self.btn_conn.config(text="Disconnect")
         self.status.set(f"Connected {self.port.get()}")
+        if info:                                # set fw/board straight from the probe's INFO —
+            self._on_info(info)                 # detection no longer depends on the async read path
         self._on_tab()
         self._diag("INFO", self._on_info, 2.0)
 
@@ -485,17 +498,22 @@ class Console:
                 continue
             if not chunk:
                 continue
-            buf += chunk
-            while b"\n" in buf:
-                raw, buf = buf.split(b"\n", 1)
-                ln = raw.decode(errors="replace").strip()
-                if not ln:
-                    continue
-                if ln.startswith("M2:"):
-                    if self.sniffing and not self.paused:
-                        self.mon_q.put(ln)
-                else:
-                    self.resp_q.put(ln)
+            try:
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    ln = raw.decode(errors="replace").strip()
+                    if not ln:
+                        continue
+                    if ln.startswith("M2:"):
+                        if self.sniffing and not self.paused:
+                            self.mon_q.put(ln)
+                    else:
+                        self.resp_q.put(ln)
+            except Exception:
+                import traceback
+                traceback.print_exc()      # to the log; never let the read thread die silently
+                buf = b""
 
     def _reconnect(self):
         self._link = "reconnecting"
@@ -1045,7 +1063,30 @@ class Console:
         self.status.set("Flash complete — click Connect to reconnect and verify.")
 
 
+def _setup_frozen_logging():
+    """A --windowed PyInstaller exe has sys.stdout/stderr == None. Any print or uncaught
+    traceback then raises inside a background thread and silently kills it (the read loop!),
+    which is exactly why the frozen exe connected but never saw INFO. Redirect both to a log
+    file so that can't happen — and so errors are visible. Returns the log path (or None)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return None
+    import tempfile
+    try:
+        path = os.path.join(tempfile.gettempdir(), "CerberusConsole.log")
+        f = open(path, "a", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdout = sys.stderr = f
+        f.write("\n--- CerberusConsole start ---\n")
+        return path
+    except Exception:
+        class _Null:
+            def write(self, *a): pass
+            def flush(self): pass
+        sys.stdout = sys.stderr = _Null()
+        return None
+
+
 if __name__ == "__main__":
+    _setup_frozen_logging()
     root = tk.Tk()
     root.geometry("780x620")
     Console(root)
