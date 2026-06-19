@@ -563,7 +563,7 @@ static int split(const String& s, char sep, String* parts, int maxp){
 static const int      KL_TX = 8, KL_RX = 7;
 static const uint32_t KL_BAUD = 10400;
 static bool    kl_up  = false;
-static uint8_t kl_tgt = 0x10;                 // ECU address (engine default), set by init
+static uint8_t kl_tgt = 0x01;                 // ECU address (engine = 0x01, per KWPBridge), set by init
 
 static uint8_t kl_cks(const uint8_t* b, int n){ uint16_t s=0; for(int i=0;i<n;i++) s+=b[i]; return (uint8_t)s; }
 
@@ -589,16 +589,15 @@ static void kl_dump(const char* tag, const uint8_t* r, int n){
   Serial.println(n? "" : "(no response)");
 }
 
-static void kl_fastinit(uint8_t target){      // ISO 14230 fast init: 25ms low / 25ms high -> StartComm 0x81
+static void kl_fastinit(uint8_t target){      // ISO 14230 fast init = line wiggle only; host then sends the session
   kl_tgt=target; KL.end(); pinMode(KL_TX,OUTPUT);
-  digitalWrite(KL_TX,HIGH); delay(300);
-  digitalWrite(KL_TX,LOW);  delay(25);
-  digitalWrite(KL_TX,HIGH); delay(25);
-  KL.begin(KL_BAUD);
-  uint8_t req[5]={0xC1,target,0xF1,0x81,0}; req[4]=kl_cks(req,4);
-  kl_send(req,5);
-  uint8_t r[24]; int n=kl_recv(r,24,400); kl_up=(n>0);
-  kl_dump("OK:kwp-fastinit ", r, n);
+  digitalWrite(KL_TX,HIGH); delay(300);       // idle high
+  digitalWrite(KL_TX,LOW);  delay(25);        // 25ms low
+  digitalWrite(KL_TX,HIGH); delay(25);        // 25ms high
+  KL.begin(KL_BAUD); delay(300);              // ECU sync wait (per KWPBridge KWP2000_FAST_INIT_WAIT)
+  while(KL.available()) KL.read();
+  kl_up=true;
+  Serial.println("OK:kwp-fast-ready (now send the session: KWP:1089 for ME7, or KWP:81 StartComm)");
 }
 
 static void kl_slowinit(uint8_t addr){        // 5-baud init: bit-bang the addr @5 baud -> sync 0x55 + keybytes
@@ -612,16 +611,21 @@ static void kl_slowinit(uint8_t addr){        // 5-baud init: bit-bang the addr 
   kl_dump("OK:kwp-slowinit ", r, n);
 }
 
-static void kl_kwp(const uint8_t* data, int len){  // framed KWP request -> RAW response frame (host parses)
+static void kl_kwp(const uint8_t* data, int len){  // framed KWP2000 request -> response payload (SID+data)
   if (!kl_up){ Serial.println("ERR:kwp-not-initialized (KWP:fast or KWP:slow first)"); return; }
-  uint8_t msg[80]; int m=0;
-  msg[m++]=0x80 | (len & 0x3F); msg[m++]=kl_tgt; msg[m++]=0xF1;   // fmt(len)+target+source
-  for(int i=0;i<len && m<78;i++) msg[m++]=data[i];
+  // ISO 14230 frame (per KWPBridge): [fmt=0x80][target][source=0xF1][len][sid+data][checksum]
+  uint8_t msg[264]; int m=0;
+  msg[m++]=0x80; msg[m++]=kl_tgt; msg[m++]=0xF1; msg[m++]=(uint8_t)len;
+  for(int i=0;i<len && m<262;i++) msg[m++]=data[i];
   msg[m]=kl_cks(msg,m); m++;
   kl_send(msg,m);
-  uint8_t r[80]; int n=kl_recv(r,80,500);
-  if(!n){ Serial.println("ERR:no-response"); return; }
-  kl_dump("OK:", r, n);
+  uint8_t r[264]; int n=kl_recv(r,264,500);
+  if(n<4){ Serial.println("ERR:no-response"); return; }
+  int plen=r[3], avail=n-5;                    // response: [fmt][tgt][src][len][payload..][cks]
+  if(plen>avail) plen=(avail<0)?0:avail;        // clamp to what actually arrived
+  Serial.print("OK:");                          // strip header + checksum -> response payload only
+  for(int i=0;i<plen;i++){ if(r[4+i]<16)Serial.print('0'); Serial.print(r[4+i],HEX); }
+  Serial.println();
 }
 
 void handleLine(String line){
@@ -643,16 +647,16 @@ void handleLine(String line){
   if (kw=="KWP"){      // Head 3 — K-line / KWP2000 for pre-CAN VAG (Serial2 + K-line transceiver)
     if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); kl_up=false; Serial.println("OK:kwp-off"); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("fast")){
-      kl_fastinit(np>=3 ? (uint8_t)strtoul(parts[2].c_str(),nullptr,16) : 0x10); return; }
+      kl_fastinit(np>=3 ? (uint8_t)strtoul(parts[2].c_str(),nullptr,16) : 0x01); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("slow")){
       if (np<3){ Serial.println("ERR:format (KWP:slow:<addr>)"); return; }
       kl_slowinit((uint8_t)strtoul(parts[2].c_str(),nullptr,16)); return; }
     if (np>=2 && parts[1].equalsIgnoreCase("raw")){
       if (np<3){ Serial.println("ERR:format (KWP:raw:<hex>)"); return; }
-      uint8_t d[80]; int n=hexBytes(parts[2],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
-      kl_send(d,n); uint8_t r[80]; int rn=kl_recv(r,80,500); kl_dump("OK:",r,rn); return; }
+      uint8_t d[264]; int n=hexBytes(parts[2],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
+      kl_send(d,n); uint8_t r[264]; int rn=kl_recv(r,264,500); kl_dump("OK:",r,rn); return; }
     if (np>=2){   // KWP:<hex> — framed request -> raw response
-      uint8_t d[80]; int n=hexBytes(parts[1],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
+      uint8_t d[264]; int n=hexBytes(parts[1],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
       kl_kwp(d,n); return; }
     Serial.println("ERR:format (KWP:fast[:tgt] | KWP:slow:<addr> | KWP:<hex> | KWP:raw:<hex> | KWP:off)");
     return;
