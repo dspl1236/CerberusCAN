@@ -66,8 +66,9 @@ organised by Cerberus's heads:
 
 - **CANBUS** (Heads 1–2) — **Sniff** (passive Head-2 trace + chronological *Record session* CSV) and
   **Diagnostics** (Head-1 UDS: VIN/Part, **Read + Clear DTCs** with **SAE J2012** English text).
-- **K-Line** (Head 3) — KWP2000/KW1281: init (fast / 5-baud), session, ECU-ID, **Read + Clear faults**
-  decoded via the **VAG DIDB**, per module address. *(Needs the K-line transceiver — bench-untested.)*
+- **K-Line** (Head 3) — KWP2000 **and KW1281**: init (fast / 5-baud / KW1281), session, ECU-ID,
+  **Read + Clear faults** (VAG DIDB text) + **live measuring blocks** (scaled via `formula.py`), per
+  module address. *(Needs the K-line transceiver — bench-untested.)*
 - **Firmware** — running version + board vs bundled, **one-click flash/update** (via `REBOOT` +
   `teensy_loader_cli`, matching hex/`--mcu` per detected board).
 
