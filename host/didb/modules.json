@@ -1,0 +1,625 @@
+[
+  {
+    "address": 1,
+    "address_hex": "01",
+    "longname": "Engine Control Module 1",
+    "symbol": "MOT_01",
+    "shortname": "EnginContrModul1"
+  },
+  {
+    "address": 2,
+    "address_hex": "02",
+    "longname": "Transmission Control Module",
+    "symbol": "GET_02",
+    "shortname": "TransContrModul"
+  },
+  {
+    "address": 3,
+    "address_hex": "03",
+    "longname": "Brakes 1",
+    "symbol": "BRE_03",
+    "shortname": "Brake1"
+  },
+  {
+    "address": 4,
+    "address_hex": "04",
+    "longname": "Steering Angle Sender",
+    "symbol": "LKP_04",
+    "shortname": "SteerAngleSende"
+  },
+  {
+    "address": 6,
+    "address_hex": "06",
+    "longname": "Seat Adjustment Passenger Side",
+    "symbol": "SVB_06",
+    "shortname": "SeatAdjusPasseSide"
+  },
+  {
+    "address": 7,
+    "address_hex": "07",
+    "longname": "Display Control Unit",
+    "symbol": "ABE_07",
+    "shortname": "DisplContrUnit"
+  },
+  {
+    "address": 8,
+    "address_hex": "08",
+    "longname": "Air Conditioning",
+    "symbol": "KLH_08",
+    "shortname": "AirCondi"
+  },
+  {
+    "address": 9,
+    "address_hex": "09",
+    "longname": "Central Electrics",
+    "symbol": "EZE_09",
+    "shortname": "CentrElect"
+  },
+  {
+    "address": 16,
+    "address_hex": "10",
+    "longname": "Parking Assistance 2",
+    "symbol": "PLA_10",
+    "shortname": "ParkiAssis2"
+  },
+  {
+    "address": 17,
+    "address_hex": "11",
+    "longname": "Engine Control Module 2",
+    "symbol": "M2B_11",
+    "shortname": "EnginContrModul2"
+  },
+  {
+    "address": 18,
+    "address_hex": "12",
+    "longname": "Clutch Control Unit",
+    "symbol": "KUP_12",
+    "shortname": "ClutcContrUnit"
+  },
+  {
+    "address": 19,
+    "address_hex": "13",
+    "longname": "Adaptive Cruise Control",
+    "symbol": "DIS_13",
+    "shortname": "AdaptCruisContr"
+  },
+  {
+    "address": 20,
+    "address_hex": "14",
+    "longname": "Wheel Dampening Electronics",
+    "symbol": "RAD_14",
+    "shortname": "WheelDampeElect"
+  },
+  {
+    "address": 21,
+    "address_hex": "15",
+    "longname": "Airbag",
+    "symbol": "AIR_15",
+    "shortname": "Airba"
+  },
+  {
+    "address": 22,
+    "address_hex": "16",
+    "longname": "Steering Column Electronics",
+    "symbol": "LRE_16",
+    "shortname": "SteerColumElect"
+  },
+  {
+    "address": 23,
+    "address_hex": "17",
+    "longname": "Dash Board",
+    "symbol": "SCH_17",
+    "shortname": "DashBoard"
+  },
+  {
+    "address": 24,
+    "address_hex": "18",
+    "longname": "Auxiliary Parking Heater",
+    "symbol": "ZST_18",
+    "shortname": "AuxilParkiHeate"
+  },
+  {
+    "address": 25,
+    "address_hex": "19",
+    "longname": "Gateway",
+    "symbol": "DID_19",
+    "shortname": "Gatew"
+  },
+  {
+    "address": 32,
+    "address_hex": "20",
+    "longname": "High Beam Assistance",
+    "symbol": "FLA_20",
+    "shortname": "HighBeamAssis"
+  },
+  {
+    "address": 33,
+    "address_hex": "21",
+    "longname": "Battery Energy Control Module 2",
+    "symbol": "BMM_21",
+    "shortname": "BatteEnergContrModul2"
+  },
+  {
+    "address": 34,
+    "address_hex": "22",
+    "longname": "All Wheel Control",
+    "symbol": "ALR_22",
+    "shortname": "AllWheelContr"
+  },
+  {
+    "address": 35,
+    "address_hex": "23",
+    "longname": "Brake Boost",
+    "symbol": "BKV_23",
+    "shortname": "BrakeBoost"
+  },
+  {
+    "address": 37,
+    "address_hex": "25",
+    "longname": "Immobilizer",
+    "symbol": "WEG_25",
+    "shortname": "Immob"
+  },
+  {
+    "address": 38,
+    "address_hex": "26",
+    "longname": "Electronic Roof Control",
+    "symbol": "ELD_26",
+    "shortname": "ElectRoofContr"
+  },
+  {
+    "address": 39,
+    "address_hex": "27",
+    "longname": "Display Control Unit Rear",
+    "symbol": "ABH_27",
+    "shortname": "DisplContrUnitRear"
+  },
+  {
+    "address": 40,
+    "address_hex": "28",
+    "longname": "Climate Control Unit Rear",
+    "symbol": "KBH_28",
+    "shortname": "ClimaContrUnitRear"
+  },
+  {
+    "address": 41,
+    "address_hex": "29",
+    "longname": "Light Control Left",
+    "symbol": "LSL_29",
+    "shortname": "LightContrLeft"
+  },
+  {
+    "address": 48,
+    "address_hex": "30",
+    "longname": "Special Function 2",
+    "symbol": "SFZ_30",
+    "shortname": "SpeciFunct2"
+  },
+  {
+    "address": 49,
+    "address_hex": "31",
+    "longname": "Engine Electronics Group",
+    "symbol": "MOV_31",
+    "shortname": "EnginElectGroup"
+  },
+  {
+    "address": 50,
+    "address_hex": "32",
+    "longname": "Lock Electronics",
+    "symbol": "SPR_32",
+    "shortname": "LockElect"
+  },
+  {
+    "address": 51,
+    "address_hex": "33",
+    "longname": "All OBD Systems",
+    "symbol": "OBDII",
+    "shortname": "AllOBDSyste"
+  },
+  {
+    "address": 52,
+    "address_hex": "34",
+    "longname": "Ride Control System",
+    "symbol": "NIV_34",
+    "shortname": "RideContrSyste"
+  },
+  {
+    "address": 53,
+    "address_hex": "35",
+    "longname": "Central Locking Control Module",
+    "symbol": "ZEN_35",
+    "shortname": "CentrLockiContrModul"
+  },
+  {
+    "address": 54,
+    "address_hex": "36",
+    "longname": "Seat Adjustment Driver Side",
+    "symbol": "SVF_36",
+    "shortname": "SeatAdjusDriveSide"
+  },
+  {
+    "address": 55,
+    "address_hex": "37",
+    "longname": "Navigation",
+    "symbol": "NAV_37",
+    "shortname": "Navig"
+  },
+  {
+    "address": 56,
+    "address_hex": "38",
+    "longname": "Roof Electronic Control Module",
+    "symbol": "DEL_38",
+    "shortname": "RoofElectContrModul"
+  },
+  {
+    "address": 57,
+    "address_hex": "39",
+    "longname": "Light Control Right",
+    "symbol": "LSR_39",
+    "shortname": "LightContrRight"
+  },
+  {
+    "address": 64,
+    "address_hex": "40",
+    "longname": "Air Conditioning Compressor",
+    "symbol": "KKP_40",
+    "shortname": "AirCondiCompr"
+  },
+  {
+    "address": 65,
+    "address_hex": "41",
+    "longname": "Diesel Pump Control Unit",
+    "symbol": "DIE_41",
+    "shortname": "DiesePumpContrUnit"
+  },
+  {
+    "address": 66,
+    "address_hex": "42",
+    "longname": "Door Electronics Driver Side",
+    "symbol": "TFA_42",
+    "shortname": "DoorElectDriveSide"
+  },
+  {
+    "address": 67,
+    "address_hex": "43",
+    "longname": "Brakes 2",
+    "symbol": "BKU_43",
+    "shortname": "Brake2"
+  },
+  {
+    "address": 68,
+    "address_hex": "44",
+    "longname": "Steering Assistance",
+    "symbol": "LKH_44",
+    "shortname": "SteerAssis"
+  },
+  {
+    "address": 69,
+    "address_hex": "45",
+    "longname": "Interior Monitoring",
+    "symbol": "IRA_45",
+    "shortname": "InterMonit"
+  },
+  {
+    "address": 70,
+    "address_hex": "46",
+    "longname": "Central Module Comfort System",
+    "symbol": "ZKS_46",
+    "shortname": "CentrModulComfoSyste"
+  },
+  {
+    "address": 71,
+    "address_hex": "47",
+    "longname": "Sound System",
+    "symbol": "SOU_47",
+    "shortname": "SoundSyste"
+  },
+  {
+    "address": 72,
+    "address_hex": "48",
+    "longname": "Seat Adjustment Rear Driver Side",
+    "symbol": "SHF_48",
+    "shortname": "SeatAdjusRearDriveSide"
+  },
+  {
+    "address": 80,
+    "address_hex": "50",
+    "longname": "Seat Adjustment 3rd Row",
+    "symbol": "SDR_50",
+    "shortname": "SeatAdjus3rdRow"
+  },
+  {
+    "address": 81,
+    "address_hex": "51",
+    "longname": "Drive Motor Control Module",
+    "symbol": "ELA_51",
+    "shortname": "DriveMotorContrModul"
+  },
+  {
+    "address": 82,
+    "address_hex": "52",
+    "longname": "Door Electronics Passenger Side",
+    "symbol": "TBF_52",
+    "shortname": "DoorElectPasseSide"
+  },
+  {
+    "address": 83,
+    "address_hex": "53",
+    "longname": "Parking Brake",
+    "symbol": "BFS_53",
+    "shortname": "ParkiBrake"
+  },
+  {
+    "address": 84,
+    "address_hex": "54",
+    "longname": "Rear Spoiler",
+    "symbol": "HKS_54",
+    "shortname": "RearSpoil"
+  },
+  {
+    "address": 85,
+    "address_hex": "55",
+    "longname": "Headlight Regulation",
+    "symbol": "LWR_55",
+    "shortname": "HeadlRegul"
+  },
+  {
+    "address": 87,
+    "address_hex": "57",
+    "longname": "TV Tuner",
+    "symbol": "TVT_57",
+    "shortname": "TVTuner"
+  },
+  {
+    "address": 88,
+    "address_hex": "58",
+    "longname": "Fuel Supply",
+    "symbol": "KSZ_58",
+    "shortname": "FuelSuppl"
+  },
+  {
+    "address": 96,
+    "address_hex": "60",
+    "longname": "Tachograph",
+    "symbol": "FSR_60",
+    "shortname": "Tacho"
+  },
+  {
+    "address": 97,
+    "address_hex": "61",
+    "longname": "Battery Regulation",
+    "symbol": "BAR_61",
+    "shortname": "BatteRegul"
+  },
+  {
+    "address": 98,
+    "address_hex": "62",
+    "longname": "Door Electronics Rear Left",
+    "symbol": "THL_62",
+    "shortname": "DoorElectRearLeft"
+  },
+  {
+    "address": 99,
+    "address_hex": "63",
+    "longname": "Entry Assistance Driver Side",
+    "symbol": "ESF_63",
+    "shortname": "EntryAssisDriveSide"
+  },
+  {
+    "address": 101,
+    "address_hex": "65",
+    "longname": "Tire Pressure Monitoring 1",
+    "symbol": "REI_65",
+    "shortname": "TirePressMonit1"
+  },
+  {
+    "address": 102,
+    "address_hex": "66",
+    "longname": "Seat Adjustment Rear",
+    "symbol": "SSV_66",
+    "shortname": "SeatAdjusRear"
+  },
+  {
+    "address": 103,
+    "address_hex": "67",
+    "longname": "Voice Control",
+    "symbol": "SPS_67",
+    "shortname": "VoiceContr"
+  },
+  {
+    "address": 104,
+    "address_hex": "68",
+    "longname": "Wiper Control Unit",
+    "symbol": "WIE_68",
+    "shortname": "WiperContrUnit"
+  },
+  {
+    "address": 105,
+    "address_hex": "69",
+    "longname": "Trailer Function",
+    "symbol": "AHF_69",
+    "shortname": "TrailFunct"
+  },
+  {
+    "address": 113,
+    "address_hex": "71",
+    "longname": "Battery Charger",
+    "symbol": "BAL_71",
+    "shortname": "BatteCharg"
+  },
+  {
+    "address": 114,
+    "address_hex": "72",
+    "longname": "Door Electronics Rear Right",
+    "symbol": "THR_72",
+    "shortname": "DoorElectRearRight"
+  },
+  {
+    "address": 115,
+    "address_hex": "73",
+    "longname": "Entry Assistance Passenger Side",
+    "symbol": "ESB_73",
+    "shortname": "EntryAssisPasseSide"
+  },
+  {
+    "address": 116,
+    "address_hex": "74",
+    "longname": "Chassis Control",
+    "symbol": "STF_74",
+    "shortname": "ChassContr"
+  },
+  {
+    "address": 117,
+    "address_hex": "75",
+    "longname": "Telematics Communication Unit",
+    "symbol": "NOT_75",
+    "shortname": "TelemCommuUnit"
+  },
+  {
+    "address": 118,
+    "address_hex": "76",
+    "longname": "Parking Assistance",
+    "symbol": "EPH_76",
+    "shortname": "ParkiAssis"
+  },
+  {
+    "address": 119,
+    "address_hex": "77",
+    "longname": "Telephone",
+    "symbol": "TEL_77",
+    "shortname": "Telep"
+  },
+  {
+    "address": 120,
+    "address_hex": "78",
+    "longname": "Sliding Door Right",
+    "symbol": "SBT_78",
+    "shortname": "SlidiDoorRight"
+  },
+  {
+    "address": 128,
+    "address_hex": "80",
+    "longname": "Battery Regulation Auxiliary Accumulator 1",
+    "symbol": "BR1_80",
+    "shortname": "BatteRegulAuxilAccum1"
+  },
+  {
+    "address": 129,
+    "address_hex": "81",
+    "longname": "Gear Shift Control Module",
+    "symbol": "WHB_81",
+    "shortname": "GearShiftContrModul"
+  },
+  {
+    "address": 130,
+    "address_hex": "82",
+    "longname": "Head Up Display",
+    "symbol": "HUD_82",
+    "shortname": "HeadUpDispl"
+  },
+  {
+    "address": 132,
+    "address_hex": "84",
+    "longname": "Night Vision",
+    "symbol": "WBK_84",
+    "shortname": "NightVisio"
+  },
+  {
+    "address": 133,
+    "address_hex": "85",
+    "longname": "On-Board Camera",
+    "symbol": "KST_85",
+    "shortname": "OnBoardCamer"
+  },
+  {
+    "address": 135,
+    "address_hex": "87",
+    "longname": "Lane Departure Warning System LT3",
+    "symbol": "MMPC906",
+    "shortname": "LaneDeparWarniSysteLT3"
+  },
+  {
+    "address": 136,
+    "address_hex": "88",
+    "longname": "Multi Contour Seat Driver Side",
+    "symbol": "MKF_88",
+    "shortname": "MultiContoSeatDriveSide"
+  },
+  {
+    "address": 137,
+    "address_hex": "89",
+    "longname": "Multi Contour Seat Passenger Side",
+    "symbol": "MKB_89",
+    "shortname": "MultiContoSeatPasseSide"
+  },
+  {
+    "address": 144,
+    "address_hex": "90",
+    "longname": "Pretensioner Front Right",
+    "symbol": "GSR_90",
+    "shortname": "PreteFrontRight"
+  },
+  {
+    "address": 145,
+    "address_hex": "91",
+    "longname": "Engine Control Module C1",
+    "symbol": "YMO_01",
+    "shortname": "EnginContrModulC1"
+  },
+  {
+    "address": 146,
+    "address_hex": "92",
+    "longname": "Transmission Electronics LT3",
+    "symbol": "ASG906",
+    "shortname": "TransElectLT3"
+  },
+  {
+    "address": 147,
+    "address_hex": "93",
+    "longname": "Immobilizer C1",
+    "symbol": "YWE_25",
+    "shortname": "ImmobC1"
+  },
+  {
+    "address": 148,
+    "address_hex": "94",
+    "longname": "Airbag LT3",
+    "symbol": "ARCADE906",
+    "shortname": "AirbaLT3"
+  },
+  {
+    "address": 149,
+    "address_hex": "95",
+    "longname": "Electronic Stability Program LT3",
+    "symbol": "ESP906",
+    "shortname": "ElectStabiProgrLT3"
+  },
+  {
+    "address": 150,
+    "address_hex": "96",
+    "longname": "Dash Board LT3",
+    "symbol": "KI906",
+    "shortname": "DashBoardLT3"
+  },
+  {
+    "address": 151,
+    "address_hex": "97",
+    "longname": "Tachograph LT3",
+    "symbol": "MTCO906",
+    "shortname": "TachoLT3"
+  },
+  {
+    "address": 152,
+    "address_hex": "98",
+    "longname": "Tire Pressure Monitoring LT3",
+    "symbol": "TPM906",
+    "shortname": "TirePressMonitLT3"
+  },
+  {
+    "address": 153,
+    "address_hex": "99",
+    "longname": "Electronic Ignition Starter Switch LT3",
+    "symbol": "EZS_LT3",
+    "shortname": "ElectIgnitStartSwitcLT3"
+  }
+]
