@@ -4,6 +4,12 @@ Produces one self-contained Windows app — Console + both firmware hexes +
 the `teensy_loader_cli` flasher — that an end user just double-clicks. **No
 Python or extra tools needed on their machine.**
 
+> **You usually don't need to build this yourself.** GitHub Actions
+> (`.github/workflows/build-console.yml`) auto-builds the `.exe` on every
+> `CONSOLE_VERSION` bump and publishes it to the **Releases** page (compiling
+> `teensy_loader_cli` in CI so the flasher is bundled). Grab it there. Build
+> locally only when iterating on the app. The steps below are that local path.
+
 ## One-time setup (build machine only)
 1. `pip install pyinstaller`
 2. Put **`teensy_loader_cli.exe`** in `host\tools\` (see `tools\README.txt` —

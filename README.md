@@ -10,13 +10,16 @@
   losslessly log the wire at the same time, from one plug.</strong>
 </p>
 
-> **Status — v0.9.6, pre-1.0.** **Dual-head hardware-validated on a 2013 Audi A6 C7:** both heads
-> read VIN / part numbers / the gateway part over multi-frame ISO-TP, and Head 2 (listen-only)
+> **Status — fw 0.9.14 / Console 0.9.15, pre-1.0.** **Dual-head hardware-validated on a 2013 Audi A6 C7:**
+> both heads read VIN / part numbers / the gateway part over multi-frame ISO-TP, and Head 2 (listen-only)
 > losslessly logged a **live ODIS Component-Protection session** while the dealer tool drove it.
-> Builds for **Teensy 4.0 *and* 4.1**, and ships with a desktop app — **CerberusConsole**
-> (sniff · diagnostics · one-click firmware update). The **write / CP** paths are implemented but
-> bench/experimental — not validated end-to-end on a car. The **OLED** output is built-to-API but
-> not yet panel-verified. Don't point write features at a car you can't recover.
+> Builds for **Teensy 4.0 (Orthrus) *and* 4.1 (Cerberus)**; ships a desktop app — **CerberusConsole**
+> (sniff · diagnostics · one-click firmware) — auto-built as a downloadable **`.exe` on the Releases page**.
+> **Dual USB serial:** the board enumerates as two COM ports — a smart command/CAN port **and an
+> always-transparent K-line cable** for **NefMoto** & other dumb-KKL tools. The **K-line / KWP2000 /
+> KW1281** path is firmware-complete but **bench-untested** (needs the transceiver). The **write / CP**
+> paths are bench/experimental — not validated end-to-end on a car. **OLED** is built-to-API, not
+> panel-verified. Don't point write features at a car you can't recover. **MIT-licensed.**
 
 Cerberus turns a Teensy 4.0/4.1 (NXP i.MX RT1062, 600 MHz Cortex-M7) into a **request-level** VAG
 VCI: you hand it a UDS request and the *firmware* runs the whole ISO-TP transaction on-device.
@@ -69,15 +72,18 @@ organised by Cerberus's heads:
   **Diagnostics** (Head-1 UDS: VIN/Part, **Read + Clear DTCs** with **SAE J2012** English text).
 - **K-Line** (Head 3) — KWP2000 **and KW1281**: init (fast / 5-baud / KW1281), session, ECU-ID,
   **Read + Clear faults** (VAG DIDB text) + **live measuring blocks** (scaled via `formula.py`), per
-  module address. *(Needs the K-line transceiver — bench-untested.)*
+  module address. Shows which **2nd COM port is the always-dumb K-line cable** to point **NefMoto** at.
+  *(Needs the K-line transceiver — bench-untested.)*
 - **Firmware** — running version + board vs bundled, **one-click flash/update** (via `REBOOT` +
-  `teensy_loader_cli`, matching hex/`--mcu` per detected board).
+  `teensy_loader_cli`, or a **PlatformIO-upload fallback** when run from source), matching hex/`--mcu`
+  per detected board; **blank-board picker** for a never-flashed Teensy.
 
 DTC text comes from two vetted tables, branched by transport: **SAE J2012** (`saedb/`, ~1,680 generic
 P/U codes) for CAN/UDS, and the **VAG DIDB** (`didb/`, 4,817 fault-locations) for K-line. Switching
 views sets the right `MODE` automatically; version + board show in the title bar; it auto-reconnects
-if a USB link drops. **Single-file build:** `cd host && build_exe.bat` → `dist/CerberusConsole.exe`
-(bundles both hexes + the flasher — see [host/BUILD-EXE.md](host/BUILD-EXE.md)).
+if a USB link drops. **Prebuilt app:** grab `CerberusConsole.exe` from the **[Releases](../../releases)**
+page (CI-built on every version bump, bundles both hexes + the flasher), or build it yourself with
+`cd host && build_exe.bat` (see [host/BUILD-EXE.md](host/BUILD-EXE.md)).
 
 ## Flash
 
@@ -88,6 +94,7 @@ if a USB link drops. **Single-file build:** `cd host && build_exe.bat` → `dist
 pip install platformio
 python -m platformio run -e teensy41 -t upload     # or:  -e teensy40
 ```
+*(The prebuilt `CerberusConsole.exe` on the Releases page flashes with one click — no toolchain.)*
 
 ## Wiring
 

@@ -76,13 +76,16 @@ COM port) — close any monitor, press the Teensy's program button, or unplug/re
 
 ## 4. Bring-up (do this *before* the car)
 
-Plug the Teensy into USB — it enumerates as **`USB Serial Device (COMx)`**. Open it at **115200**
-and type:
+Plug the Teensy into USB — with the dual-serial firmware it enumerates as **two COM ports**
+(product string **`CerberusCAN`** / `Orthrus`): a smart command/CAN port and an always-dumb K-line
+cable. Open the **smart** port at **115200** and type:
 
 ```
-INFO   ->  CERBERUS:0.9.1-emu CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384
+INFO   ->  CERBERUS:0.9.14 board=T4.1 product=Cerberus CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384 kline2=raw
 PING   ->  PONG
 ```
+*(On the raw K-line port, `INFO` gets no reply — it's a transparent cable. The Console's K-Line tab
+labels which COM is which.)*
 
 That proves the firmware's alive and both heads are on the 500 k diag bus. **It says nothing about
 the CAN wiring** — `INFO`/`PING` only exercise the PC↔Teensy USB link, upstream of the transceivers.
@@ -118,4 +121,4 @@ VIN, part numbers, and a full module map (30 raw `SCAN` hits → 14 real modules
 multi-frame ISO-TP. The dual-head logger firmware is flashed + verified on the board. The
 write / CP / EMU paths remain bench-experimental.
 
-GPLv3. Built for owners.
+MIT. Built for owners.
