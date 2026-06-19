@@ -1,0 +1,1 @@
+{"_note": "Failure-type-byte (the -XX suffix) decode intentionally empty: the generated set was not confirmable against SAE J2012-DA, so per precision-over-coverage it was dropped. Re-source the canonical J2012-DA FTB table to populate. The Console shows the raw -XX byte until then."}

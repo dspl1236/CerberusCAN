@@ -11,6 +11,7 @@ REM ============================================================================
 cd /d "%~dp0"
 
 set ADD=--add-data "..\firmware\cerberus-can-teensy41.hex;firmware" --add-data "..\firmware\cerberus-can-teensy40.hex;firmware"
+set ADD=%ADD% --add-data "didb;didb" --add-data "saedb;saedb"
 
 if exist "tools\teensy_loader_cli.exe" (
   set ADD=%ADD% --add-binary "tools\teensy_loader_cli.exe;tools"

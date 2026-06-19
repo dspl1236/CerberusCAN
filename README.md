@@ -61,16 +61,21 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
 
 ## Desktop app — CerberusConsole
 
-A plug-and-go GUI (`host/cerberus_console.py`, pyserial + tkinter — **no Simos-Suite needed**):
+A plug-and-go GUI (`host/cerberus_console.py`, pyserial + tkinter — **no Simos-Suite needed**),
+organised by Cerberus's heads:
 
-- **Sniff** — live passive trace + a chronological **Record session** CSV (every frame, in order).
-- **Diagnostics** — module picker; Read VIN / Part #; **Read + Clear DTCs** (decoded).
+- **CANBUS** (Heads 1–2) — **Sniff** (passive Head-2 trace + chronological *Record session* CSV) and
+  **Diagnostics** (Head-1 UDS: VIN/Part, **Read + Clear DTCs** with **SAE J2012** English text).
+- **K-Line** (Head 3) — KWP2000/KW1281: init (fast / 5-baud), session, ECU-ID, **Read + Clear faults**
+  decoded via the **VAG DIDB**, per module address. *(Needs the K-line transceiver — bench-untested.)*
 - **Firmware** — running version + board vs bundled, **one-click flash/update** (via `REBOOT` +
   `teensy_loader_cli`, matching hex/`--mcu` per detected board).
 
-Switching tabs sets the right `MODE` automatically; version + board show in the title bar; it
-auto-reconnects if a USB link drops. **Single-file build:** `cd host && build_exe.bat` →
-`dist/CerberusConsole.exe` (bundles both hexes + the flasher — see [host/BUILD-EXE.md](host/BUILD-EXE.md)).
+DTC text comes from two vetted tables, branched by transport: **SAE J2012** (`saedb/`, ~1,680 generic
+P/U codes) for CAN/UDS, and the **VAG DIDB** (`didb/`, 4,817 fault-locations) for K-line. Switching
+views sets the right `MODE` automatically; version + board show in the title bar; it auto-reconnects
+if a USB link drops. **Single-file build:** `cd host && build_exe.bat` → `dist/CerberusConsole.exe`
+(bundles both hexes + the flasher — see [host/BUILD-EXE.md](host/BUILD-EXE.md)).
 
 ## Flash
 
