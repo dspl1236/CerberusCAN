@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.10"
+CONSOLE_VERSION = "0.9.11"
 BUNDLED_FW = "0.9.10"                      # bump in lockstep when the bundled hexes change
 
 
@@ -172,6 +172,7 @@ class Console:
         self._build_canbus()
         self._build_kline()
         self._build_fw()
+        self._refresh_fw_tab()   # enable the blank-board picker up front (a blank board can't connect)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
 
         self.status = tk.StringVar(value="Disconnected.")
@@ -785,8 +786,16 @@ class Console:
         ttk.Label(g, textvariable=self.fw_running).grid(row=1, column=1, sticky="w", padx=8)
         ttk.Label(g, text="Bundled firmware:").grid(row=2, column=0, sticky="w")
         ttk.Label(g, text=BUNDLED_FW).grid(row=2, column=1, sticky="w", padx=8)
+        # Blank-board picker: only enabled when INFO can't self-identify the board
+        # (a never-flashed Teensy reports board=?; 4.0 and 4.1 share MCU + bootloader,
+        #  so the model can't be auto-detected until our firmware is running on it).
+        ttk.Label(g, text="Blank board:").grid(row=3, column=0, sticky="w")
+        self.board_choice = tk.StringVar(value="")
+        self.cmb_board = ttk.Combobox(g, textvariable=self.board_choice, state="disabled",
+                                      width=22, values=("Teensy 4.0 (Orthrus)", "Teensy 4.1 (Cerberus)"))
+        self.cmb_board.grid(row=3, column=1, sticky="w", padx=8)
         ttk.Label(g, textvariable=self.fw_status, foreground="#0a0",
-                  font=("TkDefaultFont", 9, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
+                  font=("TkDefaultFont", 9, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
         self.btn_flash = ttk.Button(f, text="Flash / Update firmware", command=self._flash_firmware)
         self.btn_flash.pack(anchor="w", padx=8)
         self.fw_out = tk.Text(f, height=12, wrap="word")
@@ -809,8 +818,16 @@ class Console:
 
     def _refresh_fw_tab(self):
         self.fw_running.set(f"{self.fw_board}  —  {self.fw_ver}")
+        # The picker is only live when the board can't self-identify (blank/never-flashed).
+        if self.fw_board in HEX:
+            self.cmb_board.set("")
+            self.cmb_board.config(state="disabled")
+        else:
+            self.cmb_board.config(state="readonly")
         if self.fw_ver == BUNDLED_FW:
             self.fw_status.set("Up to date.")
+        elif self.fw_board not in HEX:
+            self.fw_status.set("Board not auto-detected — pick 4.0/4.1 above, then Flash (first flash only).")
         elif self.fw_ver == "?":
             self.fw_status.set("")
         else:
@@ -824,10 +841,25 @@ class Console:
         self.result_q.put((lambda r, t=text: self._fw_append(t), None))
 
     def _flash_firmware(self):
-        if not self.running:
+        # Two paths: (1) auto — a connected board self-identified via INFO; we reboot it
+        # over serial into the bootloader. (2) manual — board not detected (blank/never-flashed,
+        # may not even be connected); use the picker and let the loader wait for a button press.
+        board = self.fw_board
+        manual = board not in HEX
+        if manual:
+            pick = self.board_choice.get()
+            if "4.0" in pick:
+                board = "T4.0"
+            elif "4.1" in pick:
+                board = "T4.1"
+            else:
+                messagebox.showinfo("Pick a board",
+                                    "Board couldn't be auto-detected (blank/never-flashed Teensy).\n"
+                                    "Choose Teensy 4.0 or 4.1 in the 'Blank board' box, then Flash.")
+                return
+        elif not self.running:
             messagebox.showinfo("Not connected", "Connect first so the board model can be detected.")
             return
-        board = self.fw_board
         hexf = HEX.get(board)
         mcu = MCU.get(board)
         if not hexf or not mcu:
@@ -839,28 +871,38 @@ class Console:
                                  "Put teensy_loader_cli.exe next to the Console (or install Teensyduino "
                                  "so it's on PATH), then try again.")
             return
-        if not messagebox.askyesno("Flash firmware",
-                                   f"Flash {os.path.basename(hexf)}  ({mcu})  to the connected board?\n\n"
-                                   "The board reboots into the bootloader, flashes, then restarts.\n"
-                                   "(Safe: the HalfKay bootloader is in ROM — a bad flash can't brick it.)"):
+        if manual:
+            prompt = (f"Flash {os.path.basename(hexf)}  ({mcu})  to a {board} board?\n\n"
+                      "Board not auto-detected (blank/never-flashed). After you click Yes, the loader "
+                      "waits — press the white PROGRAM button on the Teensy to enter the bootloader.\n"
+                      "(Safe: the bootloader is in ROM — a bad flash can't brick it.)")
+        else:
+            prompt = (f"Flash {os.path.basename(hexf)}  ({mcu})  to the connected board?\n\n"
+                      "The board reboots into the bootloader, flashes, then restarts.\n"
+                      "(Safe: the bootloader is in ROM — a bad flash can't brick it.)")
+        if not messagebox.askyesno("Flash firmware", prompt):
             return
         self.btn_flash.config(state="disabled")
         self.fw_out.delete("1.0", "end")
 
         def work():
             try:
-                self._post_fw("Rebooting board to bootloader…")
-                self._send_raw("REBOOT")
-                time.sleep(0.3)
-                self.running = False
-                try:
-                    self.ser.close()
-                except Exception:
-                    pass
-                time.sleep(1.0)
+                if manual:
+                    self._post_fw(f"Manual flash ({board}) — press the PROGRAM button on the Teensy…")
+                else:
+                    self._post_fw("Rebooting board to bootloader…")
+                    self._send_raw("REBOOT")
+                    time.sleep(0.3)
+                    self.running = False
+                    try:
+                        self.ser.close()
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
                 cmd = [loader, f"--mcu={mcu}", "-w", "-v", hexf]
                 self._post_fw("$ " + " ".join(cmd))
-                p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+                p = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=180 if manual else 90)   # manual waits for a button press
                 if p.stdout:
                     self._post_fw(p.stdout.strip())
                 if p.stderr:
