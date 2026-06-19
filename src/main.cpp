@@ -554,6 +554,76 @@ static int split(const String& s, char sep, String* parts, int maxp){
   return count;
 }
 
+// ---------------- K-line / KWP2000 — "Head 3" for pre-CAN VAG (ISO 14230 / ISO 9141) ----------------
+// K-line is a single-wire 12V UART bus (OBD pin 7), NOT CAN — so it rides a spare hardware UART
+// (Serial2: RX 7, TX 8) through a K-line transceiver (TJA1021 / MC33660 / L9637D; see HARDWARE.md).
+// Half-duplex: our own TX echoes back on RX, so every send swallows the echo.
+// BENCH-UNTESTED — needs the transceiver + a pre-CAN VAG on hand. Protocol per ISO 14230-2/-3.
+#define KL Serial2
+static const int      KL_TX = 8, KL_RX = 7;
+static const uint32_t KL_BAUD = 10400;
+static bool    kl_up  = false;
+static uint8_t kl_tgt = 0x10;                 // ECU address (engine default), set by init
+
+static uint8_t kl_cks(const uint8_t* b, int n){ uint16_t s=0; for(int i=0;i<n;i++) s+=b[i]; return (uint8_t)s; }
+
+static void kl_send(const uint8_t* b, int n){ // write bytes, swallowing the half-duplex echo
+  while (KL.available()) KL.read();
+  for (int i=0;i<n;i++){
+    KL.write(b[i]); KL.flush();
+    uint32_t t=millis(); while(millis()-t<25){ if(KL.available()){ KL.read(); break; } }
+  }
+}
+
+static int kl_recv(uint8_t* buf, int max, uint32_t window){  // burst read w/ inter-byte gap
+  int n=0; uint32_t t=millis(); uint32_t w=window;
+  while (millis()-t < w && n < max){
+    if (KL.available()){ buf[n++]=KL.read(); t=millis(); w=60; }   // shrink to inter-byte gap after 1st
+  }
+  return n;
+}
+
+static void kl_dump(const char* tag, const uint8_t* r, int n){
+  Serial.print(tag);
+  for(int i=0;i<n;i++){ if(r[i]<16) Serial.print('0'); Serial.print(r[i],HEX); }
+  Serial.println(n? "" : "(no response)");
+}
+
+static void kl_fastinit(uint8_t target){      // ISO 14230 fast init: 25ms low / 25ms high -> StartComm 0x81
+  kl_tgt=target; KL.end(); pinMode(KL_TX,OUTPUT);
+  digitalWrite(KL_TX,HIGH); delay(300);
+  digitalWrite(KL_TX,LOW);  delay(25);
+  digitalWrite(KL_TX,HIGH); delay(25);
+  KL.begin(KL_BAUD);
+  uint8_t req[5]={0xC1,target,0xF1,0x81,0}; req[4]=kl_cks(req,4);
+  kl_send(req,5);
+  uint8_t r[24]; int n=kl_recv(r,24,400); kl_up=(n>0);
+  kl_dump("OK:kwp-fastinit ", r, n);
+}
+
+static void kl_slowinit(uint8_t addr){        // 5-baud init: bit-bang the addr @5 baud -> sync 0x55 + keybytes
+  KL.end(); pinMode(KL_TX,OUTPUT);
+  digitalWrite(KL_TX,HIGH); delay(300);
+  digitalWrite(KL_TX,LOW);  delay(200);                       // start bit
+  for(int i=0;i<8;i++){ digitalWrite(KL_TX,(addr>>i)&1); delay(200); }   // 8 data bits, LSB first
+  digitalWrite(KL_TX,HIGH); delay(200);                       // stop bit
+  KL.begin(KL_BAUD);
+  uint8_t r[24]; int n=kl_recv(r,24,600); kl_up=(n>0);
+  kl_dump("OK:kwp-slowinit ", r, n);
+}
+
+static void kl_kwp(const uint8_t* data, int len){  // framed KWP request -> RAW response frame (host parses)
+  if (!kl_up){ Serial.println("ERR:kwp-not-initialized (KWP:fast or KWP:slow first)"); return; }
+  uint8_t msg[80]; int m=0;
+  msg[m++]=0x80 | (len & 0x3F); msg[m++]=kl_tgt; msg[m++]=0xF1;   // fmt(len)+target+source
+  for(int i=0;i<len && m<78;i++) msg[m++]=data[i];
+  msg[m]=kl_cks(msg,m); m++;
+  kl_send(msg,m);
+  uint8_t r[80]; int n=kl_recv(r,80,500);
+  if(!n){ Serial.println("ERR:no-response"); return; }
+  kl_dump("OK:", r, n);
+}
+
 void handleLine(String line){
   line.trim();
   if (line.length()==0) return;
@@ -568,6 +638,23 @@ void handleLine(String line){
   if (kw=="REBOOT"){   // jump to the HalfKay bootloader so the host can flash (Console "Update firmware")
     Serial.println("OK:reboot-to-bootloader"); Serial.flush(); delay(40);
     _reboot_Teensyduino_();
+    return;
+  }
+  if (kw=="KWP"){      // Head 3 — K-line / KWP2000 for pre-CAN VAG (Serial2 + K-line transceiver)
+    if (np>=2 && parts[1].equalsIgnoreCase("off")){ KL.end(); kl_up=false; Serial.println("OK:kwp-off"); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("fast")){
+      kl_fastinit(np>=3 ? (uint8_t)strtoul(parts[2].c_str(),nullptr,16) : 0x10); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("slow")){
+      if (np<3){ Serial.println("ERR:format (KWP:slow:<addr>)"); return; }
+      kl_slowinit((uint8_t)strtoul(parts[2].c_str(),nullptr,16)); return; }
+    if (np>=2 && parts[1].equalsIgnoreCase("raw")){
+      if (np<3){ Serial.println("ERR:format (KWP:raw:<hex>)"); return; }
+      uint8_t d[80]; int n=hexBytes(parts[2],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
+      kl_send(d,n); uint8_t r[80]; int rn=kl_recv(r,80,500); kl_dump("OK:",r,rn); return; }
+    if (np>=2){   // KWP:<hex> — framed request -> raw response
+      uint8_t d[80]; int n=hexBytes(parts[1],d,sizeof(d)); if(n<0){ Serial.println("ERR:hex"); return; }
+      kl_kwp(d,n); return; }
+    Serial.println("ERR:format (KWP:fast[:tgt] | KWP:slow:<addr> | KWP:<hex> | KWP:raw:<hex> | KWP:off)");
     return;
   }
   if (kw=="SLCAN"){ slcan_mode=true; Serial.println("OK:slcan (Lawicel mode on Head 1; reset board to exit)"); return; }
@@ -876,7 +963,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){

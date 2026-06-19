@@ -33,7 +33,7 @@ second**, so you can capture a Component-Protection handshake *as you drive it*.
 |------|---------|-------------|------|
 | **1** | CAN1 | 22 / 23 | **Active VCI** — Diagnostic CAN (OBD **6/14**), 500 k. UDS read/write/CP, SCAN, RAW, CANX. |
 | **2** | CAN2 | 0 / 1 | **Always-on logger** — a *2nd* `SN65HVD230` paralleled on the **same OBD 6/14**, held LISTEN-ONLY. Captures the bus while Head 1 drives (`MON`). |
-| **3** | CAN3 | 30 / 31 | **Spare** — CAN-FD-capable / bring-your-own-transceiver (FD part, or a `TJA1055T/3` for an LS-FT comfort-bus tap). Stub. |
+| **3** | Serial2 (UART) | 7 / 8 | **K-line / KWP2000** — single-wire 12 V bus (OBD **7**) via a K-line transceiver (`TJA1021`), for **pre-CAN VAG**. ISO 14230 fast + 5-baud slow init, framed `KWP` requests. *(K-line is a UART, not CAN — repurposed from the CAN3 spare. Firmware built, **bench-untested** pending the transceiver.)* |
 
 > **Both heads tap the 500 k diag bus.** On gateway cars (incl. the C7) the OBD port is
 > firewalled to the diagnostic CAN, and the gateway routes the comfort/CP traffic (seat, HVAC)
@@ -120,6 +120,8 @@ EMU:on:<bus>:<REQ>:<RESP>     emulate a module (UDS responder)     EMU:add:<pref
 TP:<bus>:<TX>:<ms> | TP:STOP  background TesterPresent keep-alive
 STATS:<bus>                   CAN error counters / bus health
 SLCAN                         enter Lawicel mode on Head 1 (reset to exit)
+KWP:fast[:tgt] | slow:<addr>  Head 3 K-line / KWP2000 init (ISO 14230 fast / 5-baud slow)
+KWP:<hex> | raw:<hex> | off   framed KWP request / raw bytes / close  (pre-CAN VAG)
 REBOOT                        jump to the bootloader (host firmware flash)
 INFO  /  PING                 INFO -> CERBERUS:<ver> board=T4.0|T4.1 …
 
@@ -155,7 +157,8 @@ mapped and named the whole car off the gateway.
 - [x] Simos-Suite drives Cerberus (dual-head driver + CP Capture live view + `set_mode`)
 - [x] `EMU` responder mode — fake a module to probe the gateway / CP from the other side
 - [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
-- [ ] K-line / KWP2000 interface for older (pre-CAN) cars — OBD-12 V powered + a K-line transceiver
+- [ ] **K-line / KWP2000** (Head 3, pre-CAN VAG) — **firmware built** (`KWP`: ISO 14230 fast + 5-baud
+  init, framed requests); **bench-untested** pending the K-line transceiver + a pre-CAN car
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
 
 ## Related
