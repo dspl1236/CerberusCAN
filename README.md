@@ -167,9 +167,11 @@ mapped and named the whole car off the gateway.
 - [ ] Head 3 configurable tap channel (CAN-FD / `TJA1055T/3` comfort bus)
 - [ ] **K-line / KWP2000** (Head 3, pre-CAN VAG) — **firmware built** (`KWP`: ISO 14230 fast + 5-baud
   init, framed requests); **bench-untested** pending the K-line transceiver + a pre-CAN car
-- [x] **Transparent K-line passthrough** (`KWP:passthrough`) — Cerberus as a dumb KKL cable so PC tools
-  that own the protocol (e.g. **NefMoto**) can drive it; **bench-untested**, fast-init focus (5-baud/break
-  init still TBD — see note below)
+- [x] **Dual USB serial — K-line dumb-cable port** — the board enumerates **two COM ports**: a smart
+  command/CAN port (this Console) **and an always-transparent K-line KKL port** for tools that own the
+  protocol (**NefMoto**, VCDS-dumb). No mode to flip; smart KWP auto-yields the K-line while the 2nd
+  port is open and reclaims it on close. (`KWP:passthrough` remains a single-port fallback.) **Bench-untested**,
+  fast-init focus (5-baud/break init still TBD)
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
 
 ## The line — Typhon's hounds
