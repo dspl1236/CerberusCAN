@@ -192,4 +192,4 @@ Orthrus and Cerberus are **one codebase, two build targets** — see [docs/PRODU
 - [esp32-isotp-ble-bridge-c7vag](https://github.com/dspl1236/esp32-isotp-ble-bridge-c7vag) — the prior-gen BLE bridge *(archived — superseded by Cerberus)*
 - [VAG-CP-Docs](https://github.com/dspl1236/VAG-CP-Docs) — Component Protection research
 
-GPLv3. Built for owners.
+MIT. Built for owners.
