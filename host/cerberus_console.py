@@ -21,7 +21,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 CONSOLE_VERSION = "0.9.11"
-BUNDLED_FW = "0.9.10"                      # bump in lockstep when the bundled hexes change
+BUNDLED_FW = "0.9.11"                      # bump in lockstep when the bundled hexes change
 
 
 def _base():
