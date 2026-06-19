@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.15"
+CONSOLE_VERSION = "0.9.16"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -306,12 +306,28 @@ class Console:
             return []
 
     def _default_port(self):
-        ps = self._ports()
-        return ps[0] if ps else "COM12"
+        cands = self._candidate_ports()
+        return cands[0] if cands else "COM12"
+
+    def _candidate_ports(self):
+        """COM devices to try on connect — Teensy (USB VID 0x16C0) first, then the rest. Probing
+        each for an INFO reply is the source of truth; this just orders the attempts and avoids
+        relying on serial_number (which a frozen PyInstaller exe often leaves blank)."""
+        try:
+            ports = list(serial.tools.list_ports.comports())
+        except Exception:
+            return []
+        teensy = sorted(p.device for p in ports if p.vid == 0x16C0)
+        others = sorted(p.device for p in ports if p.vid != 0x16C0)
+        return teensy + others
 
     # ---------------- connection ----------------
     def _toggle_conn(self):
-        self._disconnect() if self.running else self._connect()
+        if self.running:
+            self._disconnect()
+        else:
+            self._tried_ports = set()      # fresh probe-walk for this connect attempt
+            self._connect()
 
     def _connect(self):
         try:
@@ -327,20 +343,26 @@ class Console:
         self.status.set(f"Connected {self.port.get()}")
         self._on_tab()
         self._diag("INFO", self._on_info, 2.0)
-        self.root.after(2600, self._verify_smart_port)   # dual-serial: bounce off the raw port if needed
+        self.root.after(2200, self._verify_smart_port)   # dual-serial: probe-hop off the raw port if no INFO
 
     def _verify_smart_port(self):
-        """If we connected and INFO never answered, we're probably on the board's RAW K-line port
-        (the 2nd CDC). Hop to its sibling (the smart port) once. One-shot to avoid ping-pong."""
-        if not self.running or self.fw_ver != "?" or getattr(self, "_autoswitch_tried", False):
+        """If INFO never answered, we're on the wrong port — almost always the board's RAW K-line
+        CDC (a transparent cable that replies to nothing). Walk to the next candidate Teensy port
+        until one answers. Does NOT rely on serial_number (blank in a frozen exe); bounded by the
+        set of ports already tried, so it can't ping-pong."""
+        if not self.running or self.fw_ver != "?":
             return
-        sib = self._sibling_kline_port()
-        if not sib:
+        tried = getattr(self, "_tried_ports", set())
+        tried.add(self.port.get())
+        self._tried_ports = tried
+        nxt = next((d for d in self._candidate_ports() if d not in tried), None)
+        if not nxt:
+            self.status.set(f"{self.port.get()} opened but no INFO reply — that's the raw K-line port "
+                            "(or check the board/firmware). No other port answered.")
             return
-        self._autoswitch_tried = True
-        self.status.set(f"{self.port.get()} looks like the raw K-line port — switching to {sib}…")
+        self.status.set(f"{self.port.get()} didn't answer (raw port?) — trying {nxt}…")
         self._disconnect()
-        self.port.set(sib)
+        self.port.set(nxt)
         self._connect()
 
     def _disconnect(self):
@@ -365,19 +387,21 @@ class Console:
         self.status.set("Disconnected.")
 
     def _sibling_kline_port(self):
-        """The board's *second* CDC port = the always-dumb raw K-line cable. It shares the USB
-        serial number with the connected (smart) port but is a different COM. Returns its device
-        name, or None if not found (e.g. a single-serial firmware build)."""
+        """The board's OTHER CDC port = the always-dumb raw K-line cable. Prefer matching by USB
+        serial number; fall back to 'the other Teensy (VID 0x16C0) port' when serial_number is
+        blank — which it often is in a frozen PyInstaller exe. Returns its device, or None."""
         try:
             ports = list(serial.tools.list_ports.comports())
         except Exception:
             return None
         me = self.port.get()
         my_sn = next((p.serial_number for p in ports if p.device == me), None)
-        if not my_sn:
-            return None
-        sibs = [p.device for p in ports if p.serial_number == my_sn and p.device != me]
-        return sorted(sibs)[0] if sibs else None
+        if my_sn:
+            sibs = [p.device for p in ports if p.serial_number == my_sn and p.device != me]
+            if sibs:
+                return sorted(sibs)[0]
+        teensy = sorted(p.device for p in ports if p.vid == 0x16C0 and p.device != me)   # fallback
+        return teensy[0] if teensy else None
 
     def _refresh_rawport(self):
         """Passively show WHICH COM is the always-dumb raw K-line cable (the board's 2nd CDC port).
@@ -867,7 +891,7 @@ class Console:
     def _on_info(self, r):
         self.fw_ver, self.fw_board, self.product = "?", "?", "CerberusCAN"
         if r.startswith("CERBERUS:"):
-            self._autoswitch_tried = False        # good port; allow a future auto-correct
+            self._tried_ports = set()             # found the smart port; reset the probe-walk
             toks = r.split()
             head = toks[0].split(":", 1)
             if len(head) == 2:
