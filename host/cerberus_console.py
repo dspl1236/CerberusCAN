@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.21"
+CONSOLE_VERSION = "0.9.22"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -194,6 +194,7 @@ class Console:
         self.nb.pack(fill="both", expand=True, padx=6, pady=4)
         self._build_canbus()
         self._build_kline()
+        self._build_raw()
         self._build_fw()
         self._refresh_fw_tab()   # enable the blank-board picker up front (a blank board can't connect)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
@@ -915,6 +916,49 @@ class Console:
             pass
 
     # ---------------- firmware page ----------------
+    # ----- Raw TX page: type any firmware command, see the raw reply (custom TX per head) -----
+    def _build_raw(self):
+        f = ttk.Frame(self.nb)
+        self.nb.add(f, text="Raw TX")
+        ttk.Label(f, foreground="#06c", wraplength=760, padding=(6, 4),
+                  text="Send any firmware command verbatim — the prefix picks the head. "
+                       "Single request/response (for live streams use the Sniff tab).").pack(fill="x")
+        cheat = (
+            "CAN   <TX>:<RX>:<HEX>             UDS on Head 1 (shorthand)      710:77A:2200BE\n"
+            "      UDS:<bus>:<TX>:<RX>:<HEX>   full ISO-TP UDS (bus 1|2)      UDS:1:7E0:7E8:22F190\n"
+            "      RAW:<bus>:<ID>:<HEX>        one classic frame (no ISO-TP)  RAW:1:7DF:0201050000000000\n"
+            "      CANX:<bus>:<ID>:<HEX>[:ms]  send one frame, then listen ms CANX:1:7DF:0201:300\n"
+            "KWP   KWP:<hex> | KWP:raw:<hex>   K-line framed / raw bytes      KWP:1A9B   KWP:raw:81\n"
+            "K81   K81:read:<title>            KW1281 read block\n"
+            "DoIP  (future head)"
+        )
+        ttk.Label(f, text=cheat, font=("Consolas", 9), justify="left",
+                  foreground="#555", padding=(10, 2)).pack(fill="x", anchor="w")
+        row = ttk.Frame(f, padding=6)
+        row.pack(fill="x")
+        ttk.Label(row, text="Command:").pack(side="left")
+        self.raw_in = ttk.Entry(row)
+        self.raw_in.pack(side="left", fill="x", expand=True, padx=4)
+        self.raw_in.bind("<Return>", lambda e: self._raw_send())
+        ttk.Button(row, text="Send", command=self._raw_send).pack(side="left")
+        ttk.Button(row, text="Clear", command=lambda: self.raw_out.delete("1.0", "end")).pack(side="left", padx=4)
+        self.raw_out = tk.Text(f, height=15, wrap="word")
+        self.raw_out.pack(fill="both", expand=True, padx=6, pady=4)
+
+    def _raw_log(self, t):
+        self.raw_out.insert("end", t + "\n")
+        self.raw_out.see("end")
+
+    def _raw_send(self):
+        cmd = self.raw_in.get().strip()
+        if not cmd:
+            return
+        if not self.running:
+            messagebox.showinfo("Not connected", "Connect first.")
+            return
+        self._raw_log("> " + cmd)
+        self._diag(cmd, lambda r: self._raw_log(r))   # routed through the cmd machinery -> raw reply
+
     def _build_fw(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="Firmware")
