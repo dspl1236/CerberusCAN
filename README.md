@@ -180,9 +180,10 @@ mapped and named the whole car off the gateway.
   port is open and reclaims it on close. (`KWP:passthrough` remains a single-port fallback.) **Bench-untested**,
   fast-init focus (5-baud/break init still TBD)
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
-- [ ] **Software-switchable CAN termination** — one 120 Ω across OBD 6/14 via a **TS5A3157** analog switch
-  on **GPIO pin 2** (`TERM:on|off`, default off = car-safe). Bench mode terminates the bus; high-Z when
-  tapping a car. *(Until then: a 120 Ω "terminator plug" across 6/14 does the same for bench work.)*
+- [ ] **Software-switchable CAN termination** — **110 Ω + TS5A3157** (10 Ω Rₒₙ → ~120 Ω total) across OBD
+  6/14 on **GPIO pin 2** (`TERM:on|off`, default off = car-safe), switch on 5 V rail. Bench mode terminates;
+  high-Z when tapping a car. *(Alt: a 1 Ω switch like TS5A3159 + a plain 120 Ω. Until then: a 120 Ω
+  "terminator plug" across 6/14 does the same for bench work.)*
 
 ## The line — Typhon's hounds
 
