@@ -53,6 +53,31 @@ their own **120 Ω** terminator — **disable/desolder it on *both* boards** (or
 before tapping. Two extra 120 Ω in parallel with the car's 60 Ω drops the bus to ~30 Ω →
 errors. When you're only tapping/sniffing, add **no** termination of your own.
 
+### Switchable bench termination (planned — GPIO 2)
+
+For a unit that auto-terminates on the bench but stays high-Z on a car, gate a single ~120 Ω
+(**110 Ω** + the switch's **10 Ω** Rₒₙ) across 6/14 with a **TS5A3157** SPDT analog switch:
+
+```
+                              TS5A3157  (SPDT analog switch)
+                            ┌──────────────────────────────┐
+   OBD 6  CANH ──[ 110 Ω ]──┤ COM                       V+ ├──── +3V3
+                            │            (COM↔NO when      │
+   OBD 14 CANL ─────────────┤ NO          IN = HIGH)   GND ├──── GND
+                            │                              │
+                  (leave) ──┤ NC                        IN ├──── Teensy GPIO 2
+                            └──────────────────────────────┘
+```
+
+- **Series path:** `CANH → 110 Ω → COM →[switch]→ NO → CANL` ≈ 120 Ω across the bus.
+- **V+ on 3.3 V, switch on the CANL leg** — the switch node stays ~1.5–2.5 V (in range), and the
+  TS5A3157's *ratiometric* `VIH = 0.7 × V+ = 2.3 V` lets the **3.3 V GPIO drive it directly** (no
+  level shifter; a 5 V rail would need 3.5 V, which a 3.3 V pin can't reliably hit).
+- **`IN` = GPIO 2:** **HIGH = terminate** (COM↔NO), **LOW = open** (COM↔NC, NC left unconnected).
+  Default the pin **`OUTPUT` `LOW`** → open at boot → **car-safe**. Firmware: a `TERM:on|off` command.
+- One per unit, across 6/14, near the connector. *(Interim: a 120 Ω "terminator plug" across 6/14
+  does the same for bench work with zero board change.)*
+
 ## Transceivers
 
 - **Head 1 + Head 2 (diagnostic bus, 500 k):** 3.3 V `SN65HVD230` — talks to the Teensy
