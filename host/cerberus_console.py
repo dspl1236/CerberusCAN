@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.19"
+CONSOLE_VERSION = "0.9.20"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -938,8 +938,12 @@ class Console:
         self.cmb_board.grid(row=3, column=1, sticky="w", padx=8)
         ttk.Label(g, textvariable=self.fw_status, foreground="#0a0",
                   font=("TkDefaultFont", 9, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
-        self.btn_flash = ttk.Button(f, text="Flash / Update firmware", command=self._flash_firmware)
-        self.btn_flash.pack(anchor="w", padx=8)
+        btns = ttk.Frame(f)
+        btns.pack(anchor="w", padx=8)
+        self.btn_flash = ttk.Button(btns, text="Flash / Update firmware", command=self._flash_firmware)
+        self.btn_flash.pack(side="left")
+        ttk.Button(btns, text="Detect new / blank board",
+                   command=self._detect_blank_board).pack(side="left", padx=6)
         self.fw_out = tk.Text(f, height=12, wrap="word")
         self.fw_out.pack(fill="both", expand=True, padx=8, pady=6)
 
@@ -985,6 +989,42 @@ class Console:
 
     def _post_fw(self, text):
         self.result_q.put((lambda r, t=text: self._fw_append(t), None))
+
+    def _scan_pjrc_pids(self):
+        """Connected PJRC (VID 16C0) USB product-ids — including HID / bootloader boards that do NOT
+        show up as COM ports. Windows-only (Get-PnpDevice); empty set elsewhere. CREATE_NO_WINDOW so
+        no console window flashes when the frozen GUI exe spawns PowerShell."""
+        if not sys.platform.startswith("win"):
+            return set()
+        ps = (r"Get-PnpDevice | Where-Object { $_.InstanceId -match 'VID_16C0' -and $_.Status -eq 'OK' }"
+              r" | Select-Object -ExpandProperty InstanceId")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                 capture_output=True, text=True, timeout=20,
+                                 creationflags=0x08000000).stdout      # CREATE_NO_WINDOW
+        except Exception:
+            return set()
+        import re
+        return {int(m.group(1), 16) for ln in out.splitlines()
+                for m in [re.search(r"PID_([0-9A-Fa-f]{4})", ln)] if m}
+
+    def _detect_blank_board(self):
+        """Find a Teensy in ANY state — factory HID, bootloader, or already running our firmware —
+        even when it isn't a COM port, and guide the user to flash it."""
+        self.fw_status.set("Scanning USB for a Teensy…")
+        self.root.update_idletasks()
+        pids = self._scan_pjrc_pids()
+        if 0x048B in pids:
+            self.fw_status.set("Cerberus board present (Dual Serial) — click Connect at the top.")
+        elif 0x0478 in pids:
+            self.cmb_board.config(state="readonly")
+            self.fw_status.set("Teensy in BOOTLOADER (flash mode) — pick 4.0/4.1 above, then Flash.")
+        elif pids:
+            self.cmb_board.config(state="readonly")
+            self.fw_status.set("Blank/factory Teensy detected — pick 4.0/4.1 above, click Flash, "
+                               "then press the white PROGRAM button when prompted.")
+        else:
+            self.fw_status.set("No Teensy found — plug it in with a DATA usb cable, then Detect again.")
 
     def _flash_firmware(self):
         # Two paths: (1) auto — a connected board self-identified via INFO; we reboot it
