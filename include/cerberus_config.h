@@ -22,5 +22,8 @@
 //   Head 3  Serial2: TX  8, RX  7   K-line / KWP2000 for pre-CAN VAG, via a K-line transceiver on OBD 7
 //                                   (repurposed from the CAN3 30/31 spare; K-line is UART, not CAN)
 //   OLED I2C0: SDA 18, SCL 19 (optional HUD)
-//   TERM (reserved, planned): GPIO 2 -> TS5A3157 (10R Ron) + 110R = ~120R across OBD 6/14
-//                             (switch on 5V rail; bench-only termination; default OUTPUT LOW = open = car-safe)
+//   TERM (reserved, planned): GPIO 2 -> TS5A3157 (10R Ron) + 110R = ~120R across OBD 6/14.
+//     Run the switch on the 3V3 rail and put it on the CANL leg (CANH-[110R]-X-[switch]-CANL):
+//     switch node stays ~1.5-2.5V (in range), and at V+=3V3 its VIH=0.7*V+=2.3V so the 3V3 GPIO
+//     drives it directly (NO level shifter). [TS5A3157 logic thresholds are ratiometric -> a 5V
+//     rail would need VIH=3.5V > 3V3.] Bench-only; default OUTPUT LOW = open = car-safe.

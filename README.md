@@ -181,9 +181,10 @@ mapped and named the whole car off the gateway.
   fast-init focus (5-baud/break init still TBD)
 - [ ] On-device SD logging (RTC + coin cell for real timestamps)
 - [ ] **Software-switchable CAN termination** — **110 Ω + TS5A3157** (10 Ω Rₒₙ → ~120 Ω total) across OBD
-  6/14 on **GPIO pin 2** (`TERM:on|off`, default off = car-safe), switch on 5 V rail. Bench mode terminates;
-  high-Z when tapping a car. *(Alt: a 1 Ω switch like TS5A3159 + a plain 120 Ω. Until then: a 120 Ω
-  "terminator plug" across 6/14 does the same for bench work.)*
+  6/14 on **GPIO pin 2** (`TERM:on|off`, default off = car-safe). Run the switch on the **3V3 rail, on the
+  CANL leg** — its node stays ~1.5–2.5 V and VIH = 0.7×V+ = 2.3 V, so the 3V3 GPIO drives it directly
+  (no level shifter; a 5 V rail would need 3.5 V). Bench mode terminates; high-Z when tapping a car.
+  *(Until then: a 120 Ω "terminator plug" across 6/14 does the same for bench work.)*
 
 ## The line — Typhon's hounds
 
