@@ -20,7 +20,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.20"
+CONSOLE_VERSION = "0.9.21"
 BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
 
 
@@ -1097,7 +1097,12 @@ class Console:
                     cmd, cwd = [pio, "run", "-e", PIO_ENV[board], "-t", "upload"], repo
                     self._post_fw(f"(teensy_loader_cli not found — using PlatformIO upload from {repo})")
                 self._post_fw("$ " + " ".join(cmd))
-                p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                if manual:
+                    self._post_fw(">>> Now PRESS the white PROGRAM button on the Teensy to flash <<<")
+                    self.result_q.put((lambda r: self.status.set(
+                        "Waiting for the board — press the white PROGRAM button on the Teensy now…"), None))
+                cnw = 0x08000000 if sys.platform.startswith("win") else 0   # CREATE_NO_WINDOW: no popup console
+                p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, creationflags=cnw,
                                    timeout=300 if not loader else (180 if manual else 90))
                 if p.stdout:
                     self._post_fw(p.stdout.strip())
