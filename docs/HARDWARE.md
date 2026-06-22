@@ -152,3 +152,45 @@ a free Teensy UART. K-line is *fewer* bus wires than CAN (one, not a pair).
 **No battery-drain concern:** it's a plug-in diagnostic tool on USB power — unplug when done — and
 K-line only works ignition-on anyway (the ECUs are asleep otherwise), so no sleep/auto-shutoff
 logic is needed. Pin 16 (the only standard OBD power) being always-on is fine here.
+
+### Reference wiring — bare `TJA1021` (what goes *on the board*)
+
+A breakout is a bench stepping-stone; the bare SO8 is the destination. Its support circuit is the
+**K-line master node** — the load-bearing part is the **master pull-up** (the chip's internal
+~30 kΩ is a *slave* pull-up, too weak; the external 1 kΩ + diode is what makes it a master and idles
+K-line stiff-high at ~11.3 V):
+
+```
+                          TJA1021  —  K-line master node (bare SO8)
+                        ┌──────────────────────────────────────┐
+  Teensy RX (pin 7) ────┤ 1 RXD                          INH 8 ├──── n/c
+                        │                                       │
+  +3V3 ─────────────────┤ 2 EN   (HIGH = normal)        VBAT 7 ├──── OBD 16 (+12 V)
+                        │                                       │
+  +12V via 10–33k ──────┤ 3 WAKE  (HV pin → VBAT)        LIN 6 ├──── OBD 7  (K-line)
+                        │                                       │
+  Teensy TX (pin 8) ────┤ 4 TXD                          GND 5 ├──── GND
+                        └──────────────────────────────────────┘
+
+  master pull-up:  OBD 16 (+12 V) ──[ 1 kΩ ]──▶|──── LIN   (diode anode→VBAT, cathode→LIN)
+```
+
+- **TXD pull-up:** add **~10 kΩ TXD→3V3** so the bus stays recessive if the Teensy pin floats at boot
+  (also sidesteps the LIN dominant-timeout).
+- **The one rule that prevents wiring mistakes — voltage domains:** `RXD/TXD/EN` are **logic (3.3 V)**;
+  `LIN/VBAT/WAKE/INH` are **high-voltage (12 V)**. So `WAKE` ties to **VBAT** (it's an HV input meant
+  for a physical wake source) — **never** to a 3.3 V GPIO; `EN` ties to **3V3** (or a GPIO if you want
+  firmware sleep control).
+
+### Off-the-shelf breakouts — dumb vs smart (buyer beware)
+
+For bench bring-up, get the **dumb** kind: a *tiny* board — **one SO8 + an LDO**, terminals for
+`TXD/RXD/(VIO)/VBAT/LIN/GND`, **no microcontroller, no reset button, no status LEDs.** Many
+"TTL-to-LIN" modules are **smart** (an onboard MCU runs the LIN protocol for you) — those abstract the
+bus into LIN frames and **can't carry raw KWP2000**, which is exactly what we need. *Tell-by-photo:
+one little chip = dumb/right; a big QFP + a reset button = smart/wrong.*
+
+On a dumb breakout the silk is **`12V / LIN / GND`** (bus) and **`TX / RX / GND / (3V3)`** (logic).
+Wire the data pair **talker → listener**: the module's `TX` (its *output*) → **Teensy RX**, the
+module's `RX` (its *input*) → **Teensy TX**. It *looks* crossed because the silk is named from the
+module's side — but it's just the universal serial rule: a transmitter feeds a receiver.
