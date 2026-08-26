@@ -108,20 +108,55 @@ jobs:
             Auto-built from `main` at ${{ github.sha }}.
           files: out/CerberusConsole-v${{ steps.decide.outputs.version }}.exe
 
+      # Deliberately NOT gated on `release == 'true'`: cleanup is idempotent housekeeping,
+      # not part of publishing. Running it every time means a manual `workflow_dispatch`
+      # can clean up a repo that has already drifted, instead of the backlog sitting there
+      # until the next version bump happens to come along.
       - name: Prune old releases            # keep only the newest KEEP_RELEASES console-v*
-        if: steps.decide.outputs.release == 'true'
         continue-on-error: true             # best-effort cleanup: never fail the release over it
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ steps.decide.outputs.tag }}
         run: |
-          set +e                            # don't let -e / pipefail abort on a single delete
-          old=$(gh release list --limit 100 --json tagName,createdAt \
-            | jq -r --argjson keep "${KEEP_RELEASES}" \
-                '[.[] | select(.tagName|startswith("console-v"))]
-                 | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName')
-          for t in $old; do
-            echo "pruning $t"
-            gh release delete "$t" --cleanup-tag --yes || echo "  (could not delete $t — skipping)"
+          rc=0
+
+          # Count the releases the API reports PLUS the one we just published. A
+          # freshly-created release can lag in `gh release list`, and when it did the
+          # old ".[keep:]" slice came back empty, nothing was pruned, and the repo
+          # settled at KEEP+1 releases forever (6 against KEEP_RELEASES=5).
+          # Order by VERSION, not createdAt, so a lagging or re-written timestamp
+          # cannot reorder the list. sort -V puts the OLDEST first.
+          tags=$( { gh release list --limit 100 --json tagName --jq '.[].tagName'; echo "$NEW_TAG"; } \
+                  | grep '^console-v' | sort -u -V )
+          n=$(printf '%s\n' "$tags" | grep -c .)
+          echo "$n console-v release(s); keeping the newest ${KEEP_RELEASES}"
+
+          if [ "$n" -gt "${KEEP_RELEASES}" ]; then
+            for t in $(printf '%s\n' "$tags" | head -n "$(( n - KEEP_RELEASES ))"); do
+              echo "pruning $t"
+              gh release delete "$t" --cleanup-tag --yes \
+                || { echo "::warning::could not delete release $t"; rc=1; }
+              # --cleanup-tag has been observed to leave the tag behind (console-v0.9.17
+              # outlived its release that way). Confirm, and remove the ref if it did.
+              if git ls-remote --exit-code --tags origin "refs/tags/$t" >/dev/null 2>&1; then
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/$t" \
+                  && echo "  removed leftover tag $t" \
+                  || { echo "::warning::release $t deleted but its tag remains"; rc=1; }
+              fi
+            done
+          fi
+
+          # Sweep historical orphans: any console-v* tag with no release behind it.
+          live=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          for t in $(git ls-remote --tags origin 'refs/tags/console-v*' \
+                     | sed 's@.*refs/tags/@@; s@\^{}@@' | sort -u -V); do
+            printf '%s\n' "$live" | grep -qx "$t" && continue
+            echo "removing orphan tag $t (no release)"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/$t" \
+              || { echo "::warning::could not delete orphan tag $t"; rc=1; }
           done
-          exit 0
+
+          # Surface failures as annotations. continue-on-error keeps the RELEASE green;
+          # what it must not do is hide a broken prune the way the old `exit 0` did.
+          exit $rc
