@@ -20,8 +20,8 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.22"
-BUNDLED_FW = "0.9.14"                      # bump in lockstep when the bundled hexes change
+CONSOLE_VERSION = "0.9.23"
+BUNDLED_FW = "0.9.15"                      # bump in lockstep when the bundled hexes change
 
 
 def _base():
@@ -342,7 +342,11 @@ class Console:
         """Synchronously test whether dev is the Cerberus COMMAND port: open, send INFO, read
         directly for a 'CERBERUS:' reply. Returns (open_serial, info_line) on success — the port is
         left OPEN and handed to _connect (no close/reopen race) — or (None, None). Direct blocking
-        read, no async/queue timing, so it's reliable in the frozen exe. Raw K-line CDC -> (None,None)."""
+        read, no async/queue timing, so it's reliable in the frozen exe. Raw K-line CDC -> (None,None).
+
+        Special case: a bare 0x07 (BEL) reply is SLCAN's NACK for an unknown command, so the board
+        IS a Cerberus but is parked in Lawicel mode and no longer answers INFO. That returns
+        (None, "slcan") so the caller can say so instead of "no board found"."""
         try:
             s = serial.Serial(dev, 115200, timeout=0.2)
         except Exception:
@@ -357,6 +361,9 @@ class Console:
                 chunk = s.read(256)
                 if chunk:
                     buf += chunk
+                    if b"\x07" in buf and b"CERBERUS:" not in buf:
+                        s.close()             # SLCAN NACK: it's a Cerberus, wrong mode
+                        return None, "slcan"
                     if b"CERBERUS:" in buf:
                         info = ""
                         for line in buf.replace(b"\r", b"\n").split(b"\n"):
@@ -379,6 +386,7 @@ class Console:
         on serial_number (blank in a frozen exe), and skips the silent raw K-line CDC."""
         sel = self.port.get()
         order = [sel] + [d for d in self._candidate_ports() if d != sel]
+        stuck = []                              # ports that NACKed -> Cerberus in SLCAN mode
         for dev in order:
             self.status.set(f"Probing {dev} for the Cerberus command port…")
             self.root.update_idletasks()
@@ -387,6 +395,24 @@ class Console:
                 self.port.set(dev)
                 self._connect(ser=ser, info=info)
                 return
+            if info == "slcan":
+                stuck.append(dev)
+        if stuck:
+            messagebox.showerror("Cerberus stuck in SLCAN mode",
+                f"{', '.join(stuck)} answered 0x07 (BEL) to INFO — the Lawicel SLCAN NACK.\n\n"
+                "So the board IS there and the firmware is fine; it is just parked in SLCAN "
+                "mode, where it no longer speaks the native protocol (no INFO, SNIFF, MODE, "
+                "SCAN or MON).\n\n"
+                "SLCAN mode is auto-entered by any Lawicel-looking line — O/C/L/V/F/N, S<n>, "
+                "or t/T+hex — so any SavvyCAN, python-can or slcand session flips it, and it "
+                "can ONLY be left by a board reset.\n\n"
+                "• Power-cycle the Teensy: pull USB AT THE BOARD END. A powered hub or USB "
+                "extender keeps 5 V on the board if you only unplug the PC end, and then the "
+                "sketch never restarts.\n"
+                "• Do NOT reflash — there is nothing wrong with the firmware.\n\n"
+                "Then try Connect again.")
+            self.status.set(f"{stuck[0]}: stuck in SLCAN mode — power-cycle the board (not a reflash).")
+            return
         messagebox.showerror("No Cerberus found",
             "No COM port answered INFO.\n\n"
             "• Check the board is plugged in and flashed (the K-line port is silent by design).\n"
