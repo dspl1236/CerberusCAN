@@ -124,6 +124,8 @@ UDS:<bus>:<TX>:<RX>:<HEX>     full ISO-TP UDS on bus 1|2           UDS:1:710:77A
 RAW:<bus>:<ID>:<HEX>          send ONE classic frame (no ISO-TP)
 CANX:<bus>:<ID>:<HEX>[:ms]    send one frame then listen ms        (low-level send-then-listen)
 SCAN:<bus>[:lo:hi[:win]]      active responder sweep (TesterPresent)
+TP20:<bus>:<DEST>:<HEX>       KWP2000 over VAG TP2.0 (comfort-domain modules: doors, seat memory)
+TP20 | TP20:CLOSE             report / drop the open TP2.0 channel
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
 MODE:vci|sniff|dual           set both heads (sniff = BOTH listen-only, zero footprint); MODE reports

@@ -579,6 +579,134 @@ static void handleSLCAN(const String& s){
   Serial.print('\a');                                                     // unknown SLCAN cmd
 }
 
+// ---------------- VAG TP2.0 (Transport Protocol 2.0) ----------------
+//
+// The comfort-domain modules (doors, seat memory) are NOT reachable with UDS-over-ISO-TP.
+// They sit on the comfort CAN behind the gateway and speak KWP2000 over TP2.0, whose ids
+// live at 0x200 / 0x2xx / 0x3xx / 0x4Cx -- entirely outside the 0x700-0x7DF diagnostic
+// range. An exhaustive ISO-TP sweep of that range finds nothing, which is exactly why they
+// looked unreachable and why a comfort-bus tap looked mandatory. It isn't: the gateway
+// routes TP2.0 onto the ordinary OBD 6/14 pair.
+//
+// Framing (captured from a dealer tool on a 958.2, see docs):
+//   setup    -> 0x200        : <dest> C0 00 10 <ourRx_lo> <ourRx_hi> 01
+//   reply    <- 0x200+dest   : 00 D0 <ourRx echoed> <ecuTx_lo> <ecuTx_hi> 01
+//   params   -> ecuTx        : A0 0F 8A FF 00 FF        (<- A1 ... is the reply)
+//   data     : <op|seq> [len_hi len_lo] payload
+//              op nibble 1 = last of block, ACK expected ; 2 = more follows, no ACK
+//              ONLY the first PDU of a message carries the 16-bit length
+//   ack      : B<nextSeq>          keepalive : A3 (-> A1)          close : A8
+// Sequence numbers are per-direction and run continuously ACROSS messages, not per message.
+// Frames are sent unpadded, exactly as the dealer tool does.
+
+#define TP20_SETUP_ID     0x200
+#define TP20_KEEPALIVE_MS 900          // the channel dies at ~1 s of silence
+static int      tp20_bus  = 0;         // 0 = no channel open, else 1|2
+static uint8_t  tp20_dest = 0;
+static uint16_t tp20_rxid = 0;         // ECU -> us
+static uint16_t tp20_txid = 0;         // us -> ECU
+static uint8_t  tp20_seq  = 0;         // our next tx sequence nibble
+static uint32_t tp20_ka   = 0;         // last keepalive sent
+static bool     tp20_busy = false;     // suppress the background keepalive mid-transaction
+
+static bool tp20_w(uint16_t id, const uint8_t* d, int n){
+  CAN_message_t m; m.id = id; m.flags.extended = 0; m.len = n;
+  for (int i = 0; i < n; i++) m.buf[i] = d[i];
+  return (tp20_bus == 2) ? Head2.write(m) : Head1.write(m);
+}
+static bool tp20_r(CAN_message_t& r){
+  return (tp20_bus == 2) ? Head2.read(r) : Head1.read(r);
+}
+static bool tp20_await(uint16_t id, uint8_t* out, int& n, uint32_t ms){
+  uint32_t dl = millis() + ms;
+  while ((int32_t)(dl - millis()) > 0){
+    CAN_message_t r;
+    if (tp20_r(r) && r.id == id){
+      n = r.len;
+      for (int i = 0; i < r.len; i++) out[i] = r.buf[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+static void tp20_disconnect(){
+  if (tp20_bus){ uint8_t a = 0xA8; tp20_w(tp20_txid, &a, 1); }
+  tp20_bus = 0; tp20_dest = 0; tp20_rxid = tp20_txid = 0; tp20_seq = 0;
+}
+
+static bool tp20_connect(int bus, uint8_t dest, uint16_t ourRx){
+  tp20_bus = bus;
+  uint8_t req[7] = { dest, 0xC0, 0x00, 0x10,
+                     (uint8_t)(ourRx & 0xFF), (uint8_t)((ourRx >> 8) & 0x0F), 0x01 };
+  if (!tp20_w(TP20_SETUP_ID, req, 7)){ tp20_bus = 0; return false; }
+  uint8_t b[8]; int n = 0;
+  if (!tp20_await(TP20_SETUP_ID + dest, b, n, 600)){ tp20_bus = 0; return false; }
+  if (n < 7 || b[1] != 0xD0){ tp20_bus = 0; return false; }      // D0 = setup accepted
+  tp20_rxid = ourRx;
+  tp20_txid = ((b[5] & 0x0F) << 8) | b[4];                       // the id the ECU chose
+  uint8_t par[6] = { 0xA0, 0x0F, 0x8A, 0xFF, 0x00, 0xFF };       // mirror the dealer tool
+  tp20_w(tp20_txid, par, 6);
+  tp20_await(tp20_rxid, b, n, 400);                              // A1; not fatal if missed
+  tp20_dest = dest; tp20_seq = 0; tp20_ka = millis();
+  return true;
+}
+
+static bool tp20_send(const uint8_t* p, int len){
+  int off = 0; bool first = true;
+  while (off < len){
+    uint8_t f[8]; int k = 0;
+    int avail = 7 - (first ? 2 : 0);
+    int chunk = len - off; if (chunk > avail) chunk = avail;
+    bool last = (off + chunk >= len);
+    f[k++] = (last ? 0x10 : 0x20) | (tp20_seq & 0x0F);
+    if (first){ f[k++] = (len >> 8) & 0xFF; f[k++] = len & 0xFF; first = false; }
+    for (int i = 0; i < chunk; i++) f[k++] = p[off + i];
+    off += chunk;
+    if (!tp20_w(tp20_txid, f, k)) return false;
+    tp20_seq = (tp20_seq + 1) & 0x0F;
+    if (last){                                    // op 1x asked for it: wait for B<seq>
+      uint8_t b[8]; int n = 0;
+      if (!tp20_await(tp20_rxid, b, n, 300)) return false;
+    }
+  }
+  return true;
+}
+
+static int tp20_recv(uint8_t* out, int cap, uint32_t ms){
+  int want = -1, got = 0;
+  uint32_t dl = millis() + ms;
+  while ((int32_t)(dl - millis()) > 0){
+    CAN_message_t r;
+    if (!tp20_r(r) || r.id != tp20_rxid || r.len < 1) continue;
+    uint8_t op = r.buf[0] >> 4;
+    if (op == 0xA || op == 0xB) continue;                 // params / ack / keepalive
+    int i = 1;
+    if (want < 0){
+      if (r.len < 3) continue;
+      want = (r.buf[1] << 8) | r.buf[2];
+      i = 3;
+    }
+    for (; i < r.len && got < cap; i++) out[got++] = r.buf[i];
+    if (op == 0x0 || op == 0x1){                          // ACK expected
+      uint8_t a = 0xB0 | ((r.buf[0] + 1) & 0x0F);
+      tp20_w(tp20_txid, &a, 1);
+    }
+    if (want >= 0 && got >= want) return want;
+    dl = millis() + ms;                                   // keep extending while it flows
+  }
+  return -1;
+}
+
+// Background keepalive: without an A3 roughly every second the ECU drops the channel.
+static void tp20_service(){
+  if (!tp20_bus || tp20_busy) return;
+  if ((uint32_t)(millis() - tp20_ka) < TP20_KEEPALIVE_MS) return;
+  uint8_t a = 0xA3;
+  tp20_w(tp20_txid, &a, 1);
+  tp20_ka = millis();
+}
+
 // ---------------- line protocol ----------------
 static int split(const String& s, char sep, String* parts, int maxp){
   int count=0, start=0;
@@ -1151,6 +1279,58 @@ void handleLine(String line){
     else Serial.println("ERR:bus (1|2)");
     return;
   }
+  if (kw=="TP20"){
+    // TP20                      -> report the open channel
+    // TP20:CLOSE                -> disconnect (A8)
+    // TP20:<bus>:<dest>:<HEX>   -> one KWP request/response over TP2.0
+    //
+    // The channel is opened on first use and KEPT OPEN (loop() keepalives it), because
+    // setup costs ~2 round trips; a second request to the same dest reuses it. A request
+    // to a different dest transparently closes and reopens.
+    if (np < 2){
+      if (tp20_bus) { Serial.print("TP20:bus="); Serial.print(tp20_bus);
+                      Serial.print(" dest="); Serial.print(tp20_dest, HEX);
+                      Serial.print(" rx=");   Serial.print(tp20_rxid, HEX);
+                      Serial.print(" tx=");   Serial.println(tp20_txid, HEX); }
+      else Serial.println("TP20:closed");
+      return;
+    }
+    if (parts[1].equalsIgnoreCase("CLOSE")){ tp20_disconnect(); Serial.println("OK:tp20-closed"); return; }
+    if (np < 4){ Serial.println("ERR:format (TP20:bus:DEST:HEX | TP20:CLOSE | TP20)"); return; }
+    int bus       = parts[1].toInt();
+    uint8_t dest  = (uint8_t)strtoul(parts[2].c_str(), nullptr, 16);
+    if (bus != 1 && bus != 2){ Serial.println("ERR:bus (1|2)"); return; }
+    static uint8_t req[520];
+    int reqlen = hexBytes(parts[3], req, sizeof(req));
+    if (reqlen <= 0){ Serial.println("ERR:hex (too long / odd)"); return; }
+
+    tp20_busy = true;                                  // hold off the background keepalive
+    if (tp20_bus && (tp20_dest != dest || tp20_bus != bus)) tp20_disconnect();
+    if (!tp20_bus){
+      // We pick the ECU->us id ourselves; 0x300|(dest&0xF) keeps channels distinct and
+      // matches what the dealer tool happens to choose. The ECU names its own id in the reply.
+      if (!tp20_connect(bus, dest, 0x300 | (dest & 0x0F))){
+        tp20_busy = false;
+        Serial.println("ERR:tp20-connect (no D0 -- module absent, asleep, or not routed)");
+        return;
+      }
+    }
+    if (!tp20_send(req, reqlen)){
+      tp20_busy = false; tp20_disconnect();
+      Serial.println("ERR:tp20-send (no block ack)");
+      return;
+    }
+    static uint8_t resp[1024];
+    int n = tp20_recv(resp, sizeof(resp), UDS_TIMEOUT_MS);
+    tp20_ka = millis();                                // the exchange itself kept it alive
+    tp20_busy = false;
+    if (n < 0){ Serial.println("ERR:tp20-timeout"); return; }
+    Serial.print("OK:");
+    for (int i = 0; i < n; i++){ if (resp[i] < 16) Serial.print('0'); Serial.print(resp[i], HEX); }
+    Serial.println();
+    return;
+  }
+
   if (kw=="UDS"){
     if (np<5){ Serial.println("ERR:format (UDS:bus:TX:RX:HEX)"); return; }
     int bus = parts[1].toInt();
@@ -1174,7 +1354,7 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|MODE|BAUD|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|K81|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|MODE|BAUD|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|K81|EMU|STATS|TP|TP20|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
@@ -1209,6 +1389,7 @@ void loop(){
     pump_mon();                                       // always-on Head-2 background logger
     emu_service();                                    // module emulation responder (Head 1)
     tp_service();                                     // native: non-blocking TesterPresent keep-alive
+    tp20_service();                                   // native: TP2.0 channel keepalive (A3 every ~1s)
     kline_bridge();                                   // 2nd USB port = always-dumb K-line KKL cable
   }
   oled_update();                                      // throttled OLED HUD (no-op if no panel)
