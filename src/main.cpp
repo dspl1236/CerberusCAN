@@ -355,28 +355,33 @@ static void do_canx(BUS& bus, uint32_t id, const uint8_t* data, int n, uint32_t 
 // id is in [idlo, idhi] (software accept-range; default = full 0x000..0x7FF).
 // The SNIFF handler puts the controller in hardware LISTEN-ONLY (LOM) first, so this is
 // truly passive — it never ACKs and can't disturb a tester (e.g. ODIS) on the same bus.
+// Drop whatever the FIFO/mailboxes already hold before a capture starts counting.
+//
+// EVERY re-init of a head (setBaudRate + enableFIFO) leaves stale mailbox entries that read
+// back as id 0 / len 0. On Head 2 that surfaced as exactly 6 phantom "RX:0:0:" lines at t=0
+// on every capture -- the same 6 at a 2000 ms and a 5000 ms window, which is what gives them
+// away as drained garbage rather than bus traffic.
+//
+// Drain for a settle WINDOW, deliberately NOT "until the first empty read": the stale entries
+// do not surface the instant enableFIFO() returns, so breaking on the first empty read exits
+// too early and leaves them to appear inside the capture. Bounded by both a time window and a
+// frame count so a genuinely busy bus can never stall here. Costs the first few ms of a
+// capture, which is the right trade for a logger whose whole job is to be trusted.
+//
+// Shared by BOTH capture paths -- SNIFF and MON:on. Fixing only do_sniff left MON:on emitting
+// the very same 6 phantom "M2:0:0:" frames, so it lives here where neither can forget it.
+template <typename BUS>
+static void drain_stale(BUS& bus){
+  CAN_message_t junk;
+  uint32_t t0 = millis(), n = 0;
+  while ((millis() - t0) < SNIFF_SETTLE_MS && n < 512){
+    if (bus.read(junk)) n++;
+  }
+}
+
 template <typename BUS>
 static void do_sniff(BUS& bus, uint32_t ms, uint32_t idlo, uint32_t idhi){
-  // Drop whatever the FIFO/mailboxes already hold BEFORE the clock starts. Every
-  // SNIFF re-inits the head (setBaudRate + enableFIFO) to enter LISTEN-ONLY, and
-  // that leaves stale mailbox entries which read back as id 0 / len 0. On Head 2
-  // that surfaced as exactly 6 phantom "RX:0:0:" lines at t=0 on every capture --
-  // the same 6 whether the window was 2000 ms or 5000 ms, which is what gives it
-  // away as drained garbage rather than bus traffic. Bounded by both a frame count
-  // and a few ms so a genuinely busy bus can never stall the pre-drain.
-  {
-    CAN_message_t junk;
-    uint32_t t0 = millis(), n = 0;
-    // Drain for a settle WINDOW -- deliberately NOT "until the first empty read". The stale
-    // entries do not surface the instant enableFIFO() returns, so breaking on the first empty
-    // read exits too early and leaves them to appear inside the capture. That is exactly how
-    // the phantoms came back after a BAUD retune even though a plain SNIFF looked clean.
-    // Costs the first few ms of a capture on a busy bus, which is the right trade for a
-    // logger whose whole job is to be trusted.
-    while ((millis() - t0) < SNIFF_SETTLE_MS && n < 512){
-      if (bus.read(junk)) n++;
-    }
-  }
+  drain_stale(bus);
   uint32_t start=millis(), count=0, overrun=0;
   for (;;){
     if (ms!=0 && (int32_t)((start+ms)-millis())<=0) break;
@@ -939,6 +944,7 @@ void handleLine(String line){
       } else if (m=="sniff"){
         Head1.setBaudRate(bus1_baud, LISTEN_ONLY); Head1.enableFIFO();   // H1 silent too
         Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
+        drain_stale(Head1); drain_stale(Head2);   // this path arms MON straight off a re-init
         mon_idlo=0x000; mon_idhi=0x7FF; mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;
         mon_t0=millis(); mon_on=true; cur_mode_name="SNIFF";
       } else if (m=="dual"){
@@ -1061,6 +1067,8 @@ void handleLine(String line){
       mon_idlo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x000;
       mon_idhi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7FF;
       Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
+      drain_stale(Head2);           // else the re-init's stale mailboxes open the log with
+                                    // phantom "M2:0:0:" frames and inflate total= from frame 1
       mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;   // fresh ring per session
       mon_t0 = millis(); mon_on = true;
       Serial.println("OK:mon-on");
