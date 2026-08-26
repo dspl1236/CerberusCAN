@@ -81,7 +81,7 @@ Plug the Teensy into USB — with the dual-serial firmware it enumerates as **tw
 cable. Open the **smart** port at **115200** and type:
 
 ```
-INFO   ->  CERBERUS:0.9.16 board=T4.1 product=Cerberus CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384 kline2=raw
+INFO   ->  CERBERUS:0.9.17 board=T4.1 product=Cerberus CAN1=500000 CAN2=500000 tmo=6000 respmax=4096 monring=16384 kline2=raw
 PING   ->  PONG
 ```
 *(On the raw K-line port, `INFO` gets no reply — it's a transparent cable. The Console's K-Line tab

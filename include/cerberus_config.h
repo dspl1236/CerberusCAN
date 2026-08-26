@@ -1,7 +1,12 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.9.16"
+#define CERBERUS_VERSION "0.9.17"
+
+// Settle window (ms) that SNIFF/do_sniff drains before it starts counting. A head is
+// re-inited (setBaudRate + enableFIFO) on entry to LISTEN-ONLY, and the stale mailbox
+// entries that leaves read back as id 0 / len 0 a short moment later -- not instantly.
+#define SNIFF_SETTLE_MS 5
 
 // ---- Bus baud rates ----
 #define BUS1_BAUD   500000   // Head 1: active VCI on the Diagnostic CAN (OBD 6/14) — HS, SN65HVD230

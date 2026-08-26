@@ -127,6 +127,7 @@ SCAN:<bus>[:lo:hi[:win]]      active responder sweep (TesterPresent)
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
 MODE:vci|sniff|dual           set both heads (sniff = BOTH listen-only, zero footprint); MODE reports
+BAUD | BAUD:<bus>:<rate>      report / retune a head's bitrate live (RAM only, defaults on reboot)
 HEAD2:active|lom              flip Head 2 between a 2nd active VCI and the listen-only logger
 H2TEST                        Head-1-listens-while-Head-2-transmits TX-path self-test
 SELFTEST                      QC: CAN1/CAN2 loopback + H1->H2 wire check -> PASS/FAIL

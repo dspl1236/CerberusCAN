@@ -51,6 +51,15 @@ FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1;   // diagnostic, 500k  (OBD 6/1
 FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2;   // 2nd HVD230 on the SAME diag bus, 500k (OBD 6/14) — listen-only logger
 // FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> Head3;  // CAN-FD (pins 30/31), classic-CAN C7 never uses it.
 
+// Live bus rates. They start at the cerberus_config.h defaults and are retunable at runtime
+// with BAUD:<bus>:<rate>, because a head moved onto ANOTHER bus is usually another rate --
+// the COMFORT CAN, for one, is tapped off the gateway (it is not on the OBD socket at all on
+// a gateway car) and does not run at the diagnostic bus's 500k. Deliberately RAM-only: they
+// revert to the defaults on reboot, so an experiment can never leave the board mysteriously
+// mistuned the way a persisted setting would.
+static uint32_t bus1_baud = BUS1_BAUD;
+static uint32_t bus2_baud = BUS2_BAUD;
+
 // ---------------- hex helpers ----------------
 static uint8_t nib(char c){
   if (c>='0'&&c<='9') return c-'0';
@@ -357,9 +366,15 @@ static void do_sniff(BUS& bus, uint32_t ms, uint32_t idlo, uint32_t idhi){
   // and a few ms so a genuinely busy bus can never stall the pre-drain.
   {
     CAN_message_t junk;
-    uint32_t t0 = millis();
-    for (uint32_t n = 0; n < 64 && (millis() - t0) < 5; n++){
-      if (!bus.read(junk)) break;
+    uint32_t t0 = millis(), n = 0;
+    // Drain for a settle WINDOW -- deliberately NOT "until the first empty read". The stale
+    // entries do not surface the instant enableFIFO() returns, so breaking on the first empty
+    // read exits too early and leaves them to appear inside the capture. That is exactly how
+    // the phantoms came back after a BAUD retune even though a plain SNIFF looked clean.
+    // Costs the first few ms of a capture on a busy bus, which is the right trade for a
+    // logger whose whole job is to be trusted.
+    while ((millis() - t0) < SNIFF_SETTLE_MS && n < 512){
+      if (bus.read(junk)) n++;
     }
   }
   uint32_t start=millis(), count=0, overrun=0;
@@ -499,7 +514,7 @@ static void emu_service(){
 // Frames stream out as t<iii><l><dd..> (standard) / T<iiiiiiii><l><dd..> (extended).
 bool slcan_mode = false;
 static bool slcan_open = false;
-static uint32_t slcan_baud = BUS1_BAUD;
+static uint32_t slcan_baud = bus1_baud;
 
 static uint32_t slcan_bitrate(char c){
   switch (c){ case '0':return 10000;  case '1':return 20000;  case '2':return 50000;
@@ -820,8 +835,8 @@ void handleLine(String line){
 #else
     Serial.print(" board=T4.x product=Cerberus");
 #endif
-    Serial.print(" CAN1="); Serial.print(BUS1_BAUD);
-    Serial.print(" CAN2="); Serial.print(BUS2_BAUD);
+    Serial.print(" CAN1="); Serial.print(bus1_baud);
+    Serial.print(" CAN2="); Serial.print(bus2_baud);
     Serial.print(" tmo="); Serial.print(UDS_TIMEOUT_MS);
     Serial.print(" respmax=4096"); Serial.print(" monring="); Serial.print(MON_RING);
 #if defined(USB_DUAL_SERIAL) || defined(USB_TRIPLE_SERIAL)
@@ -883,6 +898,33 @@ void handleLine(String line){
     Serial.println("ERR:format (EMU:on:bus:REQ:RESP | EMU:add:PREFIX:RESP | EMU:clear|off|stat)");
     return;
   }
+  if (kw=="BAUD"){
+    // BAUD                 -> report both rates
+    // BAUD:<bus>:<rate>    -> retune one head NOW, no reflash
+    //
+    // Why: a head at the wrong bitrate sees a perfectly silent bus and raises NO error
+    // flags -- symptom-identical to an unwired tap. That ambiguity is the whole reason
+    // hunting a non-diagnostic bus (comfort off the gateway A5/A15, etc.) is painful.
+    // Retune and re-SNIFF instead of rebuilding per guess; STATS:<bus> then tells the two
+    // apart -- a wrong rate shows crc/frm/stf errors, a dead tap shows nothing at all.
+    if (np < 3){
+      Serial.print("BAUD:1="); Serial.print(bus1_baud);
+      Serial.print(" 2=");     Serial.println(bus2_baud);
+      return;
+    }
+    int bus = parts[1].toInt();
+    uint32_t rate = strtoul(parts[2].c_str(), nullptr, 10);
+    if (bus!=1 && bus!=2){ Serial.println("ERR:bus (1|2)"); return; }
+    if (rate < 10000 || rate > 1000000){ Serial.println("ERR:rate (10000-1000000)"); return; }
+    // Re-init each head into ITS OWN resting mode: Head 1 is the active VCI, Head 2 is the
+    // always-listen-only logger (same invariant SNIFF's restore has to respect).
+    if (bus==1){ bus1_baud = rate; Head1.setBaudRate(bus1_baud);               Head1.enableFIFO(); }
+    else       { bus2_baud = rate; Head2.setBaudRate(bus2_baud, LISTEN_ONLY);  Head2.enableFIFO(); }
+    Serial.print("OK:baud bus="); Serial.print(bus);
+    Serial.print(" rate=");       Serial.println(rate);
+    return;
+  }
+
   if (kw=="MODE"){
     // MODE:vci|sniff|dual — set both heads' posture in one shot (the high-level convenience over
     // HEAD2/HEAD1). vci = H1 active VCI + H2 listen-only logger (boot default); sniff = BOTH heads
@@ -891,17 +933,17 @@ void handleLine(String line){
     if (np>=2){
       String m=parts[1]; m.toLowerCase();
       if (m=="vci"){
-        Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();
-        Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+        Head1.setBaudRate(bus1_baud);              Head1.enableFIFO();
+        Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
         mon_on=false; cur_mode_name="VCI";
       } else if (m=="sniff"){
-        Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();   // H1 silent too
-        Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+        Head1.setBaudRate(bus1_baud, LISTEN_ONLY); Head1.enableFIFO();   // H1 silent too
+        Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
         mon_idlo=0x000; mon_idhi=0x7FF; mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;
         mon_t0=millis(); mon_on=true; cur_mode_name="SNIFF";
       } else if (m=="dual"){
-        Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
-        Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();
+        Head1.setBaudRate(bus1_baud); Head1.enableFIFO();
+        Head2.setBaudRate(bus2_baud); Head2.enableFIFO();
         mon_on=false; cur_mode_name="DUAL";
       } else { Serial.println("ERR:format (MODE:vci|sniff|dual)"); return; }
       Serial.print("OK:mode="); Serial.println(cur_mode_name);
@@ -917,12 +959,12 @@ void handleLine(String line){
     // MON:on also forces LOM. Default at boot is LOM.
     if (np>=2 && parts[1].equalsIgnoreCase("active")){
       mon_on=false;
-      Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();          // normal mode = full TX+RX
+      Head2.setBaudRate(bus2_baud); Head2.enableFIFO();          // normal mode = full TX+RX
       Serial.println("OK:head2-active (TX) — UDS:2/RAW:2/CANX:2/SCAN:2 now drive Head 2");
       return;
     }
     if (np>=2 && parts[1].equalsIgnoreCase("lom")){
-      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
       Serial.println("OK:head2-lom (listen-only logger)");
       return;
     }
@@ -939,25 +981,25 @@ void handleLine(String line){
     bool p1=false,p2=false; uint32_t saw=0;
     CAN_message_t r;
     // 1) CAN1 core
-    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO(); Head1.enableLoopBack(true); delay(5);
+    Head1.setBaudRate(bus1_baud); Head1.enableFIFO(); Head1.enableLoopBack(true); delay(5);
     { CAN_message_t m; m.id=0x111; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0x5A; Head1.write(m);
       uint32_t t=millis(); while(millis()-t<60){ if(Head1.read(r)&&r.id==0x111){p1=true;break;} } }
     Head1.enableLoopBack(false);
     // 2) CAN2 core
-    Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO(); Head2.enableLoopBack(true); delay(5);
+    Head2.setBaudRate(bus2_baud); Head2.enableFIFO(); Head2.enableLoopBack(true); delay(5);
     { CAN_message_t m; m.id=0x222; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0xA5; Head2.write(m);
       uint32_t t=millis(); while(millis()-t<60){ if(Head2.read(r)&&r.id==0x222){p2=true;break;} } }
     Head2.enableLoopBack(false);
     // 3) H1 -> H2 over the wire. Head 2 NORMAL (not LOM) so it ACKs Head 1 -> self-contained.
-    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
-    Head2.setBaudRate(BUS2_BAUD); Head2.enableFIFO();
+    Head1.setBaudRate(bus1_baud); Head1.enableFIFO();
+    Head2.setBaudRate(bus2_baud); Head2.enableFIFO();
     { CAN_message_t m; m.id=0x321; m.len=8; for(int i=0;i<8;i++)m.buf[i]=0x33;
       for(int i=0;i<20;i++){ Head1.write(m);
         uint32_t t=millis(); while(millis()-t<5){ if(Head2.read(r)&&r.id==0x321) saw++; } } }
     bool pw = (saw>0);
     // restore: Head 1 active VCI, Head 2 listen-only logger
-    Head1.setBaudRate(BUS1_BAUD); Head1.enableFIFO();
-    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO(); mon_on=false;
+    Head1.setBaudRate(bus1_baud); Head1.enableFIFO();
+    Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO(); mon_on=false;
     Serial.print("SELFTEST: can1_loop="); Serial.print(p1?"PASS":"FAIL");
     Serial.print(" can2_loop=");          Serial.print(p2?"PASS":"FAIL");
     Serial.print(" h1->h2_wire=");        Serial.print(pw?"PASS":"FAIL");
@@ -976,8 +1018,8 @@ void handleLine(String line){
     //   head1_saw==0 -> Head-2 TX never hits the wire (power / Rs-standby / CTX->pin1 / transceiver).
     // Needs another node on the bus to ACK (the car's gateway does). Restores both heads after.
     CAN_message_t m; m.id=0x100; m.len=8; for (int i=0;i<8;i++) m.buf[i]=0xA5;
-    Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();
-    Head2.setBaudRate(BUS2_BAUD);              Head2.enableFIFO();   // Head 2 active TX
+    Head1.setBaudRate(bus1_baud, LISTEN_ONLY); Head1.enableFIFO();
+    Head2.setBaudRate(bus2_baud);              Head2.enableFIFO();   // Head 2 active TX
     uint32_t seen=0, sent=0;
     for (int i=0;i<20;i++){
       if (Head2.write(m)) sent++;
@@ -985,8 +1027,8 @@ void handleLine(String line){
       while (millis()-t < 15){ CAN_message_t r; if (Head1.read(r) && r.id==0x100) seen++; }
     }
     CAN_error_t e2; Head2.error(e2,false);
-    Head1.setBaudRate(BUS1_BAUD);              Head1.enableFIFO();   // restore active VCI
-    Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();   // restore logger
+    Head1.setBaudRate(bus1_baud);              Head1.enableFIFO();   // restore active VCI
+    Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();   // restore logger
     mon_on=false;
     Serial.print("H2TEST: head2_queued="); Serial.print(sent);
     Serial.print(" head1_saw="); Serial.print(seen);
@@ -1018,7 +1060,7 @@ void handleLine(String line){
     if (np>=2 && parts[1].equalsIgnoreCase("on")){
       mon_idlo = (np>=3)?strtoul(parts[2].c_str(),nullptr,16):0x000;
       mon_idhi = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x7FF;
-      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
       mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;   // fresh ring per session
       mon_t0 = millis(); mon_on = true;
       Serial.println("OK:mon-on");
@@ -1041,13 +1083,13 @@ void handleLine(String line){
     // left a SECOND actively-ACKing node on the same OBD 6/14 pair until the next reboot.
     // enableFIFO() is re-asserted after each baud/LOM re-init so reception keeps working.
     if (bus==1){
-      Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();
+      Head1.setBaudRate(bus1_baud, LISTEN_ONLY); Head1.enableFIFO();
       do_sniff(Head1, ms, idlo, idhi);
-      Head1.setBaudRate(BUS1_BAUD, TX); Head1.enableFIFO();
+      Head1.setBaudRate(bus1_baud, TX); Head1.enableFIFO();
     } else if (bus==2){
-      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
       do_sniff(Head2, ms, idlo, idhi);
-      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
+      Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
     } else Serial.println("ERR:bus (1|2)");
     return;
   }
@@ -1124,13 +1166,13 @@ void handleLine(String line){
     return;
   }
 
-  Serial.println("ERR:unknown (PING|INFO|MODE|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|K81|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
+  Serial.println("ERR:unknown (PING|INFO|MODE|BAUD|SCAN|SNIFF|MON|HEAD2|H2TEST|SELFTEST|REBOOT|KWP|K81|EMU|STATS|TP|RAW|CANX|UDS|SLCAN|TX:RX:HEX)");
 }
 
 void setup(){
   Serial.begin(115200);
-  Head1.begin(); Head1.setBaudRate(BUS1_BAUD); Head1.setMaxMB(16); Head1.enableFIFO();
-  Head2.begin(); Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.setMaxMB(16); Head2.enableFIFO();
+  Head1.begin(); Head1.setBaudRate(bus1_baud); Head1.setMaxMB(16); Head1.enableFIFO();
+  Head2.begin(); Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.setMaxMB(16); Head2.enableFIFO();
   oled_init();
 }
 
