@@ -1034,8 +1034,12 @@ void handleLine(String line){
     uint32_t idlo = (np>=4)?strtoul(parts[3].c_str(),nullptr,16):0x000;
     uint32_t idhi = (np>=5)?strtoul(parts[4].c_str(),nullptr,16):0x7FF;
     // Passive sniff in hardware LISTEN-ONLY (LOM): never ACK, never disturb the bus
-    // (safe to run alongside ODIS). Restore TX on exit. enableFIFO() is re-asserted
-    // after each baud/LOM re-init so reception keeps working.
+    // (safe to run alongside ODIS). Restore each head to ITS OWN resting mode on exit --
+    // Head 1 is the active VCI, but Head 2 is the always-listen-only logger (boot sets it
+    // that way at Head2.begin(), MODE:vci and the H2TEST restore both put it back that
+    // way, and HARDWARE.md promises it "never ACKs or drives"). Restoring Head 2 to TX
+    // left a SECOND actively-ACKing node on the same OBD 6/14 pair until the next reboot.
+    // enableFIFO() is re-asserted after each baud/LOM re-init so reception keeps working.
     if (bus==1){
       Head1.setBaudRate(BUS1_BAUD, LISTEN_ONLY); Head1.enableFIFO();
       do_sniff(Head1, ms, idlo, idhi);
@@ -1043,7 +1047,7 @@ void handleLine(String line){
     } else if (bus==2){
       Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
       do_sniff(Head2, ms, idlo, idhi);
-      Head2.setBaudRate(BUS2_BAUD, TX); Head2.enableFIFO();
+      Head2.setBaudRate(BUS2_BAUD, LISTEN_ONLY); Head2.enableFIFO();
     } else Serial.println("ERR:bus (1|2)");
     return;
   }
