@@ -348,6 +348,20 @@ static void do_canx(BUS& bus, uint32_t id, const uint8_t* data, int n, uint32_t 
 // truly passive — it never ACKs and can't disturb a tester (e.g. ODIS) on the same bus.
 template <typename BUS>
 static void do_sniff(BUS& bus, uint32_t ms, uint32_t idlo, uint32_t idhi){
+  // Drop whatever the FIFO/mailboxes already hold BEFORE the clock starts. Every
+  // SNIFF re-inits the head (setBaudRate + enableFIFO) to enter LISTEN-ONLY, and
+  // that leaves stale mailbox entries which read back as id 0 / len 0. On Head 2
+  // that surfaced as exactly 6 phantom "RX:0:0:" lines at t=0 on every capture --
+  // the same 6 whether the window was 2000 ms or 5000 ms, which is what gives it
+  // away as drained garbage rather than bus traffic. Bounded by both a frame count
+  // and a few ms so a genuinely busy bus can never stall the pre-drain.
+  {
+    CAN_message_t junk;
+    uint32_t t0 = millis();
+    for (uint32_t n = 0; n < 64 && (millis() - t0) < 5; n++){
+      if (!bus.read(junk)) break;
+    }
+  }
   uint32_t start=millis(), count=0, overrun=0;
   for (;;){
     if (ms!=0 && (int32_t)((start+ms)-millis())<=0) break;

@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.9.14"
+#define CERBERUS_VERSION "0.9.15"
 
 // ---- Bus baud rates ----
 #define BUS1_BAUD   500000   // Head 1: active VCI on the Diagnostic CAN (OBD 6/14) — HS, SN65HVD230
