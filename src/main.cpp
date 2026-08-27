@@ -1394,7 +1394,21 @@ void handleLine(String line){
     if (reqlen <= 0){ Serial.println("ERR:hex (too long / odd)"); return; }
 
     tp20_busy = true;                                  // hold off the background keepalive
-    if (tp20_bus && (tp20_dest != dest || tp20_bus != bus)) tp20_disconnect();
+    if (tp20_bus && (tp20_dest != dest || tp20_bus != bus)){
+      // Re-homing to another module is NOT instant. tp20_disconnect() puts A8 on the wire and
+      // returns in microseconds; firing the next channel setup that fast means the old ECU has
+      // not torn its channel down yet, and the new channel comes up desynced -- every request
+      // then answers ERR:tp20-timeout until something issues an explicit CLOSE. A host that
+      // walks several modules (read all four doors, say) hits it constantly: measured 14/40
+      // reads failing on alternating dests, versus 0/40 when the caller closed by hand.
+      // A retry at the host cannot help, because the retry meets the same wedged channel.
+      tp20_disconnect();
+      uint32_t t0 = millis();
+      while ((millis() - t0) < TP20_REHOME_MS){          // let the ECU release, and swallow
+        CAN_message_t junk;                              // stragglers from the old channel so
+        tp20_bus = bus; tp20_r(junk); tp20_bus = 0;      // they cannot be read as the new D0
+      }
+    }
     if (!tp20_bus){
       // We pick the ECU->us id ourselves; 0x300|(dest&0xF) keeps channels distinct and
       // matches what the dealer tool happens to choose. The ECU names its own id in the reply.
