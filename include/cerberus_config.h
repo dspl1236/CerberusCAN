@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.9.20"
+#define CERBERUS_VERSION "0.9.21"
 
 // Settle window (ms) that SNIFF/do_sniff drains before it starts counting. A head is
 // re-inited (setBaudRate + enableFIFO) on entry to LISTEN-ONLY, and the stale mailbox

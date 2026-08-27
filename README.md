@@ -128,6 +128,8 @@ TP20:<bus>:<DEST>:<HEX>       KWP2000 over VAG TP2.0 (comfort-domain modules: do
 TP20 | TP20:CLOSE             report / drop the open TP2.0 channel
 SNIFF:<bus>:<ms>[:lo:hi]      passive LISTEN-ONLY dump
 MON:on[:lo:hi] | off | stat   always-on Head-2 ring-buffered logger  -> M2:<ms>:<id>:<hex>[:OVR]
+MON:PORT[:1|2]                send that log to the command port (1) or the 2nd CDC (2, a
+                              dedicated firehose a separate monitor app can open; K-line stands down)
 MODE:vci|log|sniff|dual       set both heads. log = H1 active VCI + H2 logging (the everyday mode);
                               sniff = BOTH listen-only, zero footprint. MODE alone reports
 BAUD | BAUD:<bus>:<rate>      report / retune a head's bitrate live (RAM only, defaults on reboot)

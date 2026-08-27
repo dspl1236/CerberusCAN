@@ -72,7 +72,8 @@ static int hexBytes(const String& s, uint8_t* out, int maxlen){
   for (int i=0;i<n && b<maxlen;i+=2){ uint8_t hi=nib(s[i]),lo=nib(s[i+1]); if(hi>15||lo>15)return -1; out[b++]=(hi<<4)|lo; }
   return (b*2==n)?b:-1;                              // -1 if it didn't all fit
 }
-static void printHex(const uint8_t* d,int n){ for(int i=0;i<n;i++){ if(d[i]<16)Serial.print('0'); Serial.print(d[i],HEX);} }
+static void printHexTo(Print& o,const uint8_t* d,int n){ for(int i=0;i<n;i++){ if(d[i]<16)o.print('0'); o.print(d[i],HEX);} }
+static void printHex(const uint8_t* d,int n){ printHexTo(Serial,d,n); }
 
 // ---------------- Head 2 always-on background logger (ring-buffered) ----------------
 // Head 2 is a SECOND SN65HVD230 in parallel with Head 1 on OBD 6/14, held LISTEN_ONLY.
@@ -177,16 +178,39 @@ static void oled_update(){
   oled_bar(6, "H2", h2c);     // bus traffic (logged frames)
 }
 
+// Where the M2: log goes. 1 = the command port, interleaved with command replies (a host that
+// does not demux "M2:" will read a log line where it expects OK: and appear to hang). 2 = the
+// SECOND USB CDC, i.e. a dedicated firehose.
+//
+// Port 2 exists because Windows opens a COM port EXCLUSIVELY: while a host tool holds the command
+// port, no separate monitor app can open it too. Splitting the log onto the other CDC is the only
+// way to have someone watching the bus at the same time as a tool driving it -- command/response
+// stays clean on port 1, the log streams on port 2, and neither has to demux the other.
+//
+// The cost: that CDC is normally the always-dumb K-line KKL cable, so while port 2 is selected the
+// K-line bridge stands down (see kline_bridge()).
+static uint8_t mon_port = 1;
+#if defined(USB_DUAL_SERIAL) || defined(USB_TRIPLE_SERIAL)
+  #define MON_HAS_PORT2 1
+  #define MON_OUT   (mon_port==2 ? (Print&)SerialUSB1 : (Print&)Serial)
+  #define MON_ROOM  (mon_port==2 ? SerialUSB1.availableForWrite() : Serial.availableForWrite())
+#else
+  #define MON_HAS_PORT2 0
+  #define MON_OUT   ((Print&)Serial)
+  #define MON_ROOM  (Serial.availableForWrite())
+#endif
+
 static void mon_flush(uint32_t maxframes){            // ring -> USB (only when TX has room)
   uint32_t sent=0;
   while (!mon_empty() && sent<maxframes){
-    if ((uint32_t)Serial.availableForWrite() < 40) break;  // would block -> stop; ring holds it
+    if ((uint32_t)MON_ROOM < 40) break;               // would block -> stop; ring holds it
+    Print &o = MON_OUT;
     MonFrame &f = mon_ring[mon_tail];
-    Serial.print("M2:"); Serial.print(f.t); Serial.print(':');
-    Serial.print(f.id, HEX); Serial.print(':');
-    printHex(f.buf, f.len);
-    if (f.ovr) Serial.print(":OVR");
-    Serial.println();
+    o.print("M2:"); o.print(f.t); o.print(':');
+    o.print(f.id, HEX); o.print(':');
+    printHexTo(o, f.buf, f.len);
+    if (f.ovr) o.print(":OVR");
+    o.println();
     mon_tail = (mon_tail+1)%MON_RING;
     sent++;
   }
@@ -802,6 +826,12 @@ static bool kl_ext_owned = false;               // true while the 2nd USB port o
 #if defined(USB_DUAL_SERIAL) || defined(USB_TRIPLE_SERIAL)
 static bool kl_bridge_on = false;
 static void kline_bridge(){
+  // MON owns the 2nd CDC while mon_port==2: stand down entirely, or K-line bytes would be
+  // spliced into the M2: log and a monitor app's keystrokes would be injected onto the K-line.
+  if (mon_port == 2){
+    if (kl_bridge_on){ kl_bridge_on = false; kl_ext_owned = false; }   // hand the K-line back
+    return;
+  }
   bool host = (bool)SerialUSB1;                 // 2nd CDC port open by the host (DTR asserted)?
   if (host && !kl_bridge_on){                   // just opened -> claim the K-line for the raw bridge
     KL.end(); KL.begin(kl_baud); while(KL.available()) KL.read();
@@ -1192,8 +1222,23 @@ void handleLine(String line){
       Serial.print(" peak="); Serial.println(mon_peak);
       return;
     }
+    if (np>=2 && parts[1].equalsIgnoreCase("port")){
+      // MON:PORT -> report ; MON:PORT:1|2 -> choose the sink (see mon_port above)
+      if (np < 3){ Serial.print("M2PORT:"); Serial.println(mon_port); return; }
+      int p = parts[2].toInt();
+      if (p != 1 && p != 2){ Serial.println("ERR:port (1|2)"); return; }
+      if (p == 2 && !MON_HAS_PORT2){ Serial.println("ERR:no-2nd-cdc (single-serial build)"); return; }
+      if (p == 2 && kl_passthru){
+        Serial.println("ERR:kline-passthrough-active (it owns the 2nd CDC; reset to exit)"); return;
+      }
+      mon_port = (uint8_t)p;
+      Serial.print("OK:mon-port="); Serial.print(mon_port);
+      Serial.println(mon_port==2 ? " (2nd CDC; K-line bridge stands down)" : " (command port)");
+      return;
+    }
     if (np>=2 && parts[1].equalsIgnoreCase("stat")){
       Serial.print("M2STAT:on="); Serial.print(mon_on?1:0);
+      Serial.print(" port="); Serial.print(mon_port);
       Serial.print(" depth="); Serial.print(mon_depth());
       Serial.print(" peak="); Serial.print(mon_peak);
       Serial.print(" dropped="); Serial.print(mon_dropped);
@@ -1212,7 +1257,7 @@ void handleLine(String line){
       Serial.println("OK:mon-on");
       return;
     }
-    Serial.println("ERR:format (MON:on[:idlo:idhi] | MON:off | MON:stat)");
+    Serial.println("ERR:format (MON:on[:idlo:idhi] | MON:off | MON:stat | MON:PORT[:1|2])");
     return;
   }
   if (kw=="SNIFF"){
