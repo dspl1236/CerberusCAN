@@ -20,8 +20,8 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.29"
-BUNDLED_FW = "0.9.21"                      # bump in lockstep when the bundled hexes change
+CONSOLE_VERSION = "0.9.30"
+BUNDLED_FW = "0.9.22"                      # bump in lockstep when the bundled hexes change
 
 
 def _base():
@@ -103,18 +103,70 @@ except Exception:
 
 # Sniff-grid CAN-ID labels
 LABELS = {
-    0x700: "Broadcast/TP", 0x710: "Gateway req", 0x77A: "Gateway resp",
-    0x7E0: "Engine req", 0x7E8: "Engine resp", 0x7E1: "TCU req", 0x7E9: "TCU resp",
-    0x712: "Airbag req", 0x77C: "Airbag resp", 0x713: "Cluster req", 0x77D: "Cluster resp",
-    0x714: "ABS req", 0x77E: "ABS resp", 0x715: "Climatronic req", 0x77F: "Climatronic resp",
-    0x70E: "MMI req", 0x778: "MMI resp",
+    0x700: "Functional (all)", 0x7DF: "Functional (OBD)",
+    0x710: "Gateway req",   0x77A: "Gateway resp",
+    0x7E0: "Engine req",    0x7E8: "Engine resp",
+    0x7E1: "TCU req",       0x7E9: "TCU resp",
+    0x713: "ABS/ESP req",   0x77D: "ABS/ESP resp",      # was labelled Cluster
+    0x714: "Cluster req",   0x77E: "Cluster resp",      # was labelled ABS
+    0x715: "Airbag req",    0x77F: "Airbag resp",       # was labelled Climatronic
+    0x712: "Pwr steer req", 0x77C: "Pwr steer resp",    # was labelled Airbag
+    0x70E: "BCM front req", 0x778: "BCM front resp",    # was labelled MMI
+    0x70D: "BCM rear req",  0x777: "BCM rear resp",
+    0x773: "Head unit req", 0x7DD: "Head unit resp",
+    0x70C: "Steering req",  0x776: "Steering resp",
+    0x719: "Climate req",   0x783: "Climate resp",
+    # VAG TP2.0 (comfort domain): channel setup, then a negotiated pair per module.
+    0x200: "TP2.0 setup",
+    0x222: "TP2.0 ch-open 22", 0x223: "TP2.0 ch-open 23", 0x224: "TP2.0 ch-open 24",
+    0x225: "TP2.0 ch-open 25", 0x226: "TP2.0 ch-open 26",
+    0x302: "Door FL -> us", 0x4C2: "us -> Door FL",
+    0x303: "Door FR -> us", 0x4C3: "us -> Door FR",
+    0x304: "Door RL -> us", 0x4C4: "us -> Door RL",
+    0x305: "Door RR -> us", 0x4C5: "us -> Door RR",
+    0x306: "Seat mem -> us", 0x4C6: "us -> Seat mem",
 }
 # CAN diagnostics module picker: (label, request id, response id)
+# VAG 11-bit diagnostic addresses. These are CHASSIS-INVARIANT across the group, so the same
+# table serves an Audi C7 and a Porsche 958 alike; response id = request + 0x6A, except the
+# legislated 7E0-7E7 block where it is + 0x08.
+#
+# Corrected against live part-number reads (Cayenne 958.2, cross-checked with the Audi map):
+# 713 and 714 were swapped, 712 was labelled Airbag when it is the power steering, 715 was
+# labelled Climatronic when it IS the airbag, and 70E was labelled MMI when it is the front BCM
+# (the head unit is 773). Five of the eight original entries named the wrong module.
 MODULES = [
-    ("Engine / ECM", "7E0", "7E8"), ("Transmission / TCM", "7E1", "7E9"),
-    ("Gateway / J533", "710", "77A"), ("ABS / brakes", "714", "77E"),
-    ("Airbag", "712", "77C"), ("Instrument cluster", "713", "77D"),
-    ("Climatronic / HVAC", "715", "77F"), ("MMI / infotainment", "70E", "778"),
+    ("Engine / ECM",            "7E0", "7E8"),
+    ("Transmission / TCM",      "7E1", "7E9"),
+    ("Gateway",                 "710", "77A"),
+    ("ABS / ESP",               "713", "77D"),
+    ("Instrument cluster",      "714", "77E"),
+    ("Airbag / restraints",     "715", "77F"),
+    ("BCM front / central el.", "70E", "778"),
+    ("BCM rear",                "70D", "777"),
+    ("Head unit (KWP)",         "773", "7DD"),
+    ("Steering column",         "70C", "776"),
+    ("Power steering",          "712", "77C"),
+    ("TPMS",                    "70B", "775"),
+    ("Climate / HVAC",          "719", "783"),
+    ("Park assist",             "70A", "774"),
+    ("Liftgate",                "723", "78D"),
+    ("Parking brake (EPB)",     "752", "7BC"),
+    ("PASM / suspension",       "755", "7BF"),
+    ("ACC radar",               "757", "7C1"),
+    ("Lane assist",             "74E", "7B8"),
+    ("HV battery",              "7E5", "7ED"),
+    ("Drive motor / inverter",  "7E6", "7EE"),
+    ("Onboard charger",         "744", "7AE"),
+]
+
+# Comfort-domain modules. NOT reachable with UDS over ISO-TP -- they speak KWP2000 over VAG
+# TP2.0, which is why they never show up in a 700-7DF sweep. Needs firmware >= 0.9.19:
+#   TP20:<bus>:<DEST>:<HEX>   (the firmware owns channel setup, ACKs and the keepalive)
+TP20_MODULES = [
+    ("Door front left",  "22"), ("Door front right", "23"),
+    ("Door rear left",   "24"), ("Door rear right",  "25"),
+    ("Seat memory",      "26"),
 ]
 # K-line module picker: (label, address byte hex)
 KL_MODULES = [

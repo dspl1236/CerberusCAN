@@ -446,7 +446,7 @@ static void tp_service(){
 // winms reply window now configurable — gateway-routed modules need ~100 ms, not 40.
 template <typename BUS>
 static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
-  uint32_t found = 0;
+  uint32_t found = 0, filtered = 0;
   for (uint32_t tx = lo; tx <= hi; tx++){
     CAN_message_t m; m.id = tx; m.flags.extended = 0; m.len = 8;
     for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
@@ -457,6 +457,17 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
       CAN_message_t r;
       if (bus.read(r)){
         if (r.id == tx) continue;                       // ignore self-reception echo
+        // Count only a REAL answer to the TesterPresent we just sent: a single frame carrying
+        // either the positive 7E or a negative 7F 3E. ANY frame used to count, which made the
+        // sweep report phantoms on a bus that carries traffic -- and worse, a FUNCTIONAL address
+        // (0x700, 0x7DF) is answered by every module at once, so those replies drained into the
+        // windows of the ids that came after it. A 700-7DF sweep claimed 45 modules where 26
+        // exist, the extras being a contiguous block right after 0x700. Keep waiting inside the
+        // window rather than giving up, so a genuine reply still lands behind unrelated traffic.
+        uint8_t pci = r.buf[0] >> 4;
+        bool real = (pci == 0) && r.len >= 3 &&
+                    (r.buf[1] == 0x7E || (r.buf[1] == 0x7F && r.buf[2] == 0x3E));
+        if (!real){ filtered++; continue; }
         Serial.print("FOUND:"); Serial.print(tx, HEX); Serial.print(':');
         Serial.print(r.id, HEX); Serial.print(':');
         printHex(r.buf, r.len); Serial.println();
@@ -465,7 +476,9 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
       }
     }
   }
-  Serial.print("DONE:"); Serial.println(found);
+  Serial.print("DONE:"); Serial.print(found);
+  if (filtered){ Serial.print(" filtered:"); Serial.print(filtered); }  // unrelated frames seen
+  Serial.println();
 }
 
 // ---------------- EMU: module emulation (UDS responder) ----------------
