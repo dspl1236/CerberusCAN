@@ -1059,7 +1059,7 @@ void handleLine(String line){
   }
 
   if (kw=="MODE"){
-    // MODE:vci|sniff|dual — set both heads' posture in one shot (the high-level convenience over
+    // MODE:vci|log|sniff|dual — set both heads' posture in one shot (the high-level convenience over
     // HEAD2/HEAD1). vci = H1 active VCI + H2 listen-only logger (boot default); sniff = BOTH heads
     // listen-only + MON on (zero bus footprint — safe to log a live ODIS/dealer session); dual =
     // both active VCIs. `MODE` alone reports. Steady OLED title reflects it.
@@ -1075,11 +1075,21 @@ void handleLine(String line){
         drain_stale(Head1); drain_stale(Head2);   // this path arms MON straight off a re-init
         mon_idlo=0x000; mon_idhi=0x7FF; mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;
         mon_t0=millis(); mon_on=true; cur_mode_name="SNIFF";
+      } else if (m=="log"){
+        // The everyday working mode: Head 1 is the ACTIVE VCI, Head 2 is the passive logger,
+        // and MON is armed in one shot. Reachable before as MODE:vci followed by MON:on -- but
+        // that ordering is a trap, because MODE:vci sets mon_on=false, so doing it the other way
+        // round (or any later MODE) silently kills the logging while looking fine.
+        Head1.setBaudRate(bus1_baud);              Head1.enableFIFO();
+        Head2.setBaudRate(bus2_baud, LISTEN_ONLY); Head2.enableFIFO();
+        drain_stale(Head2);                        // no phantom frames at the head of the log
+        mon_idlo=0x000; mon_idhi=0x7FF; mon_head=mon_tail=0; mon_dropped=0; mon_peak=0; mon_total=0;
+        mon_t0=millis(); mon_on=true; cur_mode_name="LOG";
       } else if (m=="dual"){
         Head1.setBaudRate(bus1_baud); Head1.enableFIFO();
         Head2.setBaudRate(bus2_baud); Head2.enableFIFO();
         mon_on=false; cur_mode_name="DUAL";
-      } else { Serial.println("ERR:format (MODE:vci|sniff|dual)"); return; }
+      } else { Serial.println("ERR:format (MODE:vci|log|sniff|dual)"); return; }
       Serial.print("OK:mode="); Serial.println(cur_mode_name);
       return;
     }
