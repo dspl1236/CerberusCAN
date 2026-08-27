@@ -468,6 +468,20 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
         bool real = (pci == 0) && r.len >= 3 &&
                     (r.buf[1] == 0x7E || (r.buf[1] == 0x7F && r.buf[2] == 0x3E));
         if (!real){ filtered++; continue; }
+        // ...and it must come from THIS id's paired address. Shape alone is not enough: replies
+        // to a functional request are valid TesterPresent answers too, and the slow ones (the
+        // gateway relays across domains) arrive tens of ms later -- well after any sane drain --
+        // landing in a later id's window. Pairing settles it arithmetically: 0x701's answer would
+        // be 0x76B, so a frame from 0x77A is provably the gateway answering something else.
+        // A shape-valid reply on an UNPAIRED id is reported as OTHER: rather than dropped, so a
+        // module using a non-standard offset stays visible instead of silently vanishing.
+        if (r.id != tx + 0x6A && r.id != tx + 0x08){
+          Serial.print("OTHER:"); Serial.print(tx, HEX); Serial.print(':');
+          Serial.print(r.id, HEX); Serial.print(':');
+          printHex(r.buf, r.len); Serial.println();
+          filtered++;
+          continue;
+        }
         Serial.print("FOUND:"); Serial.print(tx, HEX); Serial.print(':');
         Serial.print(r.id, HEX); Serial.print(':');
         printHex(r.buf, r.len); Serial.println();
