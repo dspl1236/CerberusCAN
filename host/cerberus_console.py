@@ -8,8 +8,10 @@ A plug-and-go app for the CerberusCAN VCI — no Simos-Suite needed.
     python cerberus_console.py    # pick the COM port, hit Connect
 
 Organised by Cerberus's heads:
-  * CANBUS  (Heads 1-2, CAN) — Sniff (passive Head-2 logger) + Diagnostics (Head-1 UDS:
-            VIN/part, read/clear DTCs with SAE J2012 text).
+  * CANBUS  (Heads 1-2, CAN) — Sniff (passive Head-2 logger) + Diagnostics (Head-1: VIN/part,
+            read/clear DTCs with SAE J2012 text). Two transports behind one module picker —
+            UDS over ISO-TP for the diagnostic-bus modules, and KWP2000 over VAG TP2.0 for the
+            comfort domain (doors, seat memory), which ISO-TP cannot reach at all.
   * K-Line  (Head 3, KWP2000/KW1281) — init, ECU-ID, read/clear faults (VAG DIDB text).
             Needs the K-line transceiver wired (Serial2 7/8 -> OBD 7).
   * Firmware — running vs bundled version, one-click flash.
@@ -20,7 +22,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.30"
+CONSOLE_VERSION = "0.9.31"
 BUNDLED_FW = "0.9.22"                      # bump in lockstep when the bundled hexes change
 
 
@@ -163,6 +165,7 @@ MODULES = [
 # Comfort-domain modules. NOT reachable with UDS over ISO-TP -- they speak KWP2000 over VAG
 # TP2.0, which is why they never show up in a 700-7DF sweep. Needs firmware >= 0.9.19:
 #   TP20:<bus>:<DEST>:<HEX>   (the firmware owns channel setup, ACKs and the keepalive)
+TP20_SUFFIX = "  ·  TP2.0"          # picker suffix; how _mod_target() tells the transports apart
 TP20_MODULES = [
     ("Door front left",  "22"), ("Door front right", "23"),
     ("Door rear left",   "24"), ("Door rear right",  "25"),
@@ -293,8 +296,9 @@ class Console:
         top.pack(fill="x")
         ttk.Label(top, text="Module:").pack(side="left")
         self.module = tk.StringVar(value=MODULES[0][0])
-        ttk.Combobox(top, textvariable=self.module, width=20, state="readonly",
-                     values=[m[0] for m in MODULES]).pack(side="left", padx=4)
+        ttk.Combobox(top, textvariable=self.module, width=26, state="readonly",
+                     values=[m[0] for m in MODULES] +
+                            [lbl + TP20_SUFFIX for lbl, _ in TP20_MODULES]).pack(side="left", padx=4)
         self._action(top, "Read VIN", lambda: self._read_did("F190"))
         self._action(top, "Read Part #", lambda: self._read_did("F187"))
         self._action(top, "Read DTCs", self._read_dtcs)
@@ -672,25 +676,80 @@ class Console:
 
     # ---------------- CAN diagnostics ----------------
     def _mod_ids(self):
+        """Back-compat: the (tx, rx) pair, UDS modules only."""
+        kind, a, b = self._mod_target()
+        return (a, b) if kind == "uds" else ("7E0", "7E8")
+
+    def _mod_target(self):
+        """('uds', tx, rx) or ('tp20', dest, None) for the selected module.
+
+        The two transports are deliberately one picker: from the operator's side reading a door
+        is the same job as reading the cluster. Only the framing underneath differs, and the
+        firmware owns that.
+        """
         name = self.module.get()
-        for m in MODULES:
-            if m[0] == name:
-                return m[1], m[2]
-        return "7E0", "7E8"
+        for lbl, tx, rx in MODULES:
+            if lbl == name:
+                return "uds", tx, rx
+        if name.endswith(TP20_SUFFIX):
+            base = name[:-len(TP20_SUFFIX)]
+            for lbl, dest in TP20_MODULES:
+                if lbl == base:
+                    return "tp20", dest, None
+        return "uds", "7E0", "7E8"
 
     def _read_did(self, did):
-        tx, rx = self._mod_ids()
-        self._diag(f"UDS:1:{tx}:{rx}:22{did}", lambda r: self._show(self._fmt_did(r, did)), expect="62")
+        kind, a, b = self._mod_target()
+        cmd = f"TP20:1:{a}:22{did}" if kind == "tp20" else f"UDS:1:{a}:{b}:22{did}"
+        self._diag(cmd, lambda r: self._show(self._fmt_did(r, did)), expect="62")
 
     def _read_dtcs(self):
-        tx, rx = self._mod_ids()
-        self._diag(f"UDS:1:{tx}:{rx}:1902FF", lambda r: self._show(self._fmt_dtcs(r)), expect="59")
+        kind, a, b = self._mod_target()
+        if kind == "tp20":
+            # Comfort modules are KWP2000: ReadDTCByStatus is service 18, NOT the UDS 19 02 the
+            # CAN modules answer. Observed live on all five: 18 02 FF 00 -> 58 00.
+            self._diag(f"TP20:1:{a}:1802FF00", lambda r: self._show(self._fmt_dtcs_kwp(r)),
+                       expect="58")
+        else:
+            self._diag(f"UDS:1:{a}:{b}:1902FF", lambda r: self._show(self._fmt_dtcs(r)), expect="59")
 
     def _clear_dtcs(self):
-        tx, rx = self._mod_ids()
+        kind, a, b = self._mod_target()
+        if kind == "tp20":
+            if not messagebox.askyesno(
+                    "Clear DTCs",
+                    f"Clear all DTCs on {self.module.get()}?\n\n"
+                    "This is a WRITE, and unlike the reads it has NOT been verified on a car for "
+                    "the comfort-domain modules — the KWP clear command for them is inferred, not "
+                    "observed. Most likely it is simply rejected. Proceed?"):
+                return
+            self._diag(f"TP20:1:{a}:14FFFF", lambda r: self._show(self._fmt_clear(r)), expect="54")
+            return
         if not messagebox.askyesno("Clear DTCs", f"Clear all DTCs on {self.module.get()}?"):
             return
-        self._diag(f"UDS:1:{tx}:{rx}:14FFFFFF", lambda r: self._show(self._fmt_clear(r)), expect="54")
+        self._diag(f"UDS:1:{a}:{b}:14FFFFFF", lambda r: self._show(self._fmt_clear(r)), expect="54")
+
+    def _fmt_dtcs_kwp(self, r):
+        """KWP2000 ReadDTCByStatus reply: 58 <count> then <hi> <lo> <status> per DTC.
+
+        Only the empty case (58 00) has been seen on a real car, so the per-DTC layout below is
+        the protocol's, not something observed -- treat a non-zero list as needing a second look.
+        """
+        if not r.startswith("OK:"):
+            return f"{self.module.get()}  DTC read failed: {r}"
+        try:
+            b = bytes.fromhex(r[3:])
+        except ValueError:
+            return f"{self.module.get()}  unparsable reply: {r}"
+        if not b or b[0] != 0x58:
+            return f"{self.module.get()}  unexpected reply: {r[3:]}"
+        n = b[1] if len(b) > 1 else 0
+        if n == 0:
+            return f"{self.module.get()}  no stored DTCs"
+        lines = [f"{self.module.get()}  {n} DTC(s)  [KWP layout unverified]"]
+        for i in range(2, len(b) - 2, 3):
+            lines.append("    %02X%02X   status %02X" % (b[i], b[i + 1], b[i + 2]))
+        return "\n".join(lines)
 
     def _fmt_did(self, r, did):
         if r.startswith("OK:"):
