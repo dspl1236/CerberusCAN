@@ -22,8 +22,8 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.32"
-BUNDLED_FW = "0.9.22"                      # bump in lockstep when the bundled hexes change
+CONSOLE_VERSION = "0.9.33"
+BUNDLED_FW = "0.9.23"                      # bump in lockstep when the bundled hexes change
 
 
 def _base():

@@ -475,6 +475,13 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
         break;
       }
     }
+    // Drop anything still queued before moving to the next id. The content filter above cannot
+    // do this on its own: a FUNCTIONAL address (0x700, 0x7DF) is answered by EVERY module at
+    // once, and those surplus replies are genuine 02 7E 00 TesterPresent answers -- identical in
+    // shape to the next id's own reply, just answers to the previous question. Measured on the
+    // bench cart, which has exactly four modules: without this, 0x700's replies surfaced as
+    // phantom "modules" at 0x701 and 0x702.
+    drain_stale(bus);
   }
   Serial.print("DONE:"); Serial.print(found);
   if (filtered){ Serial.print(" filtered:"); Serial.print(filtered); }  // unrelated frames seen
