@@ -22,7 +22,7 @@ import sys, os, time, threading, queue, csv, subprocess, shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-CONSOLE_VERSION = "0.9.31"
+CONSOLE_VERSION = "0.9.32"
 BUNDLED_FW = "0.9.22"                      # bump in lockstep when the bundled hexes change
 
 
@@ -1171,6 +1171,55 @@ class Console:
     def _post_fw(self, text):
         self.result_q.put((lambda r, t=text: self._fw_append(t), None))
 
+    def _verify_flash(self, settle=25.0):
+        """After a flash, ask the board what it is actually running.
+
+        Runs on the flash worker thread (already off the UI thread). Waits for the board to
+        re-enumerate, probes every candidate port for INFO, and compares the reported firmware
+        version against the hex we just wrote. Three outcomes worth telling apart:
+          - version matches BUNDLED_FW  -> genuinely flashed
+          - answers INFO, older version -> the write did not take; the old image is still running
+          - never comes back at all     -> almost certainly sitting in the bootloader, which needs
+                                           the PROGRAM button (no software path can reach it)
+        """
+        deadline = time.time() + settle
+        info = None
+        while time.time() < deadline and not info:
+            for dev in self._candidate_ports():
+                ser, got = self._probe_port(dev, timeout=1.0)
+                if ser:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+                    info, port = got, dev
+                    break
+            if not info:
+                time.sleep(1.0)
+        if not info:
+            self._post_fw(
+                "VERIFY FAILED — the board never came back on a COM port.\n"
+                "  It is most likely in the bootloader with nothing programmed. Press the white\n"
+                "  PROGRAM button on the Teensy and flash again; no software can recover it from\n"
+                "  here. (The flasher's exit code says nothing about whether the write landed.)")
+            self.result_q.put((lambda r: self.status.set(
+                "Flash NOT verified — press the PROGRAM button and flash again."), None))
+            return
+        ver = ""
+        for tok in info.split():
+            if tok.startswith("CERBERUS:"):
+                ver = tok.split(":", 1)[1]
+        if ver == BUNDLED_FW:
+            self._post_fw(f"VERIFIED — {port} reports firmware {ver}. Flash confirmed on the board.")
+            self.result_q.put((lambda r, v=ver: self.status.set(f"Flash verified — firmware {v}."), None))
+        else:
+            self._post_fw(
+                f"VERIFY FAILED — {port} reports firmware {ver or '?'}, expected {BUNDLED_FW}.\n"
+                "  The board is alive but still running the OLD image, so the write did not take.\n"
+                "  Try again; if it keeps reporting the old version, use the PROGRAM button.")
+            self.result_q.put((lambda r: self.status.set(
+                "Flash NOT verified — board still on the old firmware."), None))
+
     def _scan_pjrc_pids(self):
         """Connected PJRC (VID 16C0) USB product-ids — including HID / bootloader boards that do NOT
         show up as COM ports. Windows-only (Get-PnpDevice); empty set elsewhere. CREATE_NO_WINDOW so
@@ -1289,8 +1338,16 @@ class Console:
                     self._post_fw(p.stdout.strip())
                 if p.stderr:
                     self._post_fw(p.stderr.strip())
-                self._post_fw("Flash " + ("OK — board restarting." if p.returncode == 0
-                                          else f"FAILED (exit {p.returncode})"))
+                if p.returncode != 0:
+                    self._post_fw(f"Flash FAILED (exit {p.returncode})")
+                else:
+                    # DO NOT trust the exit code alone. The Teensy tools return 0 once they have
+                    # handed the hex to the loader -- not when the board has been programmed. With
+                    # no board attached, or no desktop session for the GUI loader, that is a clean
+                    # "success" over a board that was never written (and which may now be sitting in
+                    # the bootloader with no COM port). Ask the board itself what it is running.
+                    self._post_fw("Flash reported OK — verifying against the board…")
+                    self._verify_flash()
             except Exception as e:
                 self._post_fw("ERROR: " + str(e))
             finally:
