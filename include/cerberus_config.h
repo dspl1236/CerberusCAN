@@ -1,7 +1,7 @@
 #pragma once
 // Cerberus — bus + ISO-TP configuration
 
-#define CERBERUS_VERSION "0.9.25"
+#define CERBERUS_VERSION "0.9.26"
 
 // Settle window (ms) that SNIFF/do_sniff drains before it starts counting. A head is
 // re-inited (setBaudRate + enableFIFO) on entry to LISTEN-ONLY, and the stale mailbox
@@ -21,6 +21,13 @@
 // IMPORTANT: remove the 120R termination resistor from BOTH HVD230 breakouts — the car already
 // has ~60R on the bus, so the two taps must add NO termination (high-impedance stubs only).
 // Head 3: CAN-FD (CAN3, pins 30/31) needs an FD-rated transceiver — spare, unused for now.
+
+// How long a single CAN frame may wait for a free FlexCAN TX mailbox before the send is
+// called a failure. A padded 8-byte frame at 500 kbps holds the wire ~270 us and there are 8
+// TX mailboxes, so a healthy bus never needs more than ~2 ms even back-to-back; 20 ms is a
+// wide margin that still fails fast when the frames are not draining at all (dead bus, or a
+// head left in LISTEN_ONLY, where nothing is ever transmitted).
+#define CAN_TX_WAIT_MS  20
 
 // ---- ISO-TP ----
 #define PAD_BYTE        0x00 // frame padding (some VAG modules prefer 0xAA/0xCC — change if fussy)

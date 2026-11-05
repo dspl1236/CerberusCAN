@@ -28,11 +28,15 @@
  *                                  also auto-entered on the first SLCAN cmd (O/C/L/S<n>/t/T). Reset to exit.
  *
  * Replies:  OK:<resphex>
- *           ERR:tx-fail | ERR:no-flow-control | ERR:no-response | ERR:partial:<got>/<total>
+ *           ERR:tx-fail | ERR:bus-fault | ERR:no-flow-control | ERR:no-response | ERR:partial:<got>/<total>
  *           (sniff) RX:<ms>:<id>:<data> ... DONE:<n>
  *
  * Diagnostic ERR codes (the point of v0.3.0):
- *   tx-fail          our frame never made it onto the wire (no xcvr/bus ACK -> bus down/idle)
+ *   tx-fail          OUR side could not get the frame out: every FlexCAN TX mailbox stayed
+ *                    busy for CAN_TX_WAIT_MS, i.e. we tried to feed the wire faster than it
+ *                    carries. Local congestion -- the bus itself is fine.
+ *   bus-fault        the controller went error-passive / bus-off: frames are not being ACKed,
+ *                    so the wire is down, the head is wrong, or terminal 15 is off.
  *   no-flow-control  module RX'd our First Frame but never sent CTS (busy / routing dropped it)
  *   no-response      NOTHING came back on RXID  (wrong response ID / module not routed / silent)
  *   partial:g/t      we got a First Frame + g of t bytes, then it went quiet (routed-bus stall)
@@ -47,8 +51,10 @@
 #include <SSD1306AsciiWire.h>
 #include "cerberus_config.h"
 
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1;   // diagnostic, 500k  (OBD 6/14)
-FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2;   // 2nd HVD230 on the SAME diag bus, 500k (OBD 6/14) — listen-only logger
+typedef FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Head1_t;
+typedef FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Head2_t;
+Head1_t Head1;   // diagnostic, 500k  (OBD 6/14)
+Head2_t Head2;   // 2nd HVD230 on the SAME diag bus, 500k (OBD 6/14) — listen-only logger
 // FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> Head3;  // CAN-FD (pins 30/31), classic-CAN C7 never uses it.
 
 // Live bus rates. They start at the cerberus_config.h defaults and are retunable at runtime
@@ -230,6 +236,94 @@ static inline void stmin_delay(uint8_t st){
   else delay(1);                                                 // reserved -> be safe
 }
 
+// ---------------- CAN TX gate ----------------
+// write() has THREE outcomes, and the old `if (!bus.write(m)) return 1;` collapsed them:
+//   1 = straight into a hardware TX mailbox (8 of them here: MB8..MB15),
+//  -1 = every mailbox busy, so queued in FlexCAN_T4's 16-entry SOFTWARE queue. Not lost -- the
+//       TX-complete ISR (enableFIFO arms MB interrupts, begin() enables the NVIC) moves one
+//       queued frame into each mailbox as it frees, in order,
+//   0 = mailboxes AND that queue are both full. THE FRAME IS DROPPED. This was the bug.
+//
+// So the board could only ever buffer 8 + 16 = 24 frames ahead of the wire. A 514-byte
+// TransferData is 1 FF + 73 CFs, and when a module's Flow Control says STmin = 0 (the 958
+// gateway's BOOTLOADER does) they go out back-to-back: frame ~25 hit the full queue, write()
+// returned 0, and do_uds called that "ERR:tx-fail (frame never ACKed on the wire)". It died in
+// 0.05 s -- far too fast for any ECU to have timed out, which is what gives the cause away as
+// ours. The workaround was 48-byte blocks; that flashed the gateway at ~10x the frames, 544 s.
+//
+// Fix: wait for a free TX mailbox FIRST -- the same test write() itself makes -- and only then
+// write. A padded 8-byte frame at 500 kbps holds the wire ~270 us, so the wait is microseconds
+// in practice; pump_mon() keeps the Head-2 logger draining while we spin.
+//
+// Why gate on a mailbox instead of just retrying write() until the queue has room: with the
+// queue in use, the ISR also arms mailboxes, and write()'s own "scan for TX_INACTIVE, then
+// write" is NOT guarded against it (events() takes NVIC_DISABLE_IRQ for exactly this reason,
+// write() does not). An ISR landing between our scan and our store would overwrite a frame the
+// ISR had just armed -- a silently dropped and reordered CF in the middle of a flash download.
+// Keeping the queue empty means only the main loop ever arms a mailbox, so that race cannot
+// happen; the pipeline depth costs nothing because throughput is wire-limited either way.
+//
+// And do NOT reach for bus.events() to drain the queue by hand: its frame.mb == -1 path writes
+// the SAME peeked frame into EVERY free mailbox while popping one entry per mailbox, so it
+// duplicates frames on the wire and drops the rest.
+static inline uint32_t can_base(Head1_t&){ return (uint32_t)CAN1; }
+static inline uint32_t can_base(Head2_t&){ return (uint32_t)CAN2; }
+
+// First mailbox that is NOT part of the RX FIFO region -- the same arithmetic as the library's
+// private mailboxOffset(). Counting from MB0 would be wrong: the FIFO filter table holds raw
+// id words whose bits 27:24 can read back as code 8 (TX_INACTIVE) and look like a free mailbox.
+static inline uint8_t can_tx_mb_first(uint32_t base){
+  if (!(FLEXCANb_MCR(base) & FLEXCAN_MCR_FEN)) return 0;          // FIFO off -> all are mailboxes
+  uint8_t maxmb = FLEXCANb_MAXMB_SIZE(base);
+  uint8_t rffn  = (FLEXCANb_CTRL2(base) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0x0F;
+  uint8_t used  = 6 + (rffn + 1) * 2;                             // FIFO engine + filter table
+  return (maxmb > used) ? used : maxmb;
+}
+static inline bool can_tx_mb_free(uint32_t base){
+  for (uint8_t i = can_tx_mb_first(base); i < FLEXCANb_MAXMB_SIZE(base); i++)
+    if (FLEXCAN_get_code(FLEXCANb_MBn_CS(base, i)) == FLEXCAN_MB_CODE_TX_INACTIVE) return true;
+  return false;
+}
+
+// TX accounting, reported by STATS so a slow or failing send can be explained after the fact.
+static uint32_t cantx_frames = 0;    // frames that reached a mailbox
+static uint32_t cantx_waits  = 0;    // how many of those had to wait for one to free up
+static uint32_t cantx_maxwus = 0;    // longest single wait, microseconds
+static uint32_t cantx_full   = 0;    // waits that ran out -> tx-fail
+static uint32_t cantx_queued = 0;    // raced into the software queue (should stay 0)
+static uint8_t  cantx_fc_bs  = 0;    // BS from the last Flow Control a module sent us
+static uint8_t  cantx_fc_st  = 0;    // STmin likewise (0 = "send them back-to-back")
+
+// Send one frame, waiting for a free mailbox rather than letting it reach the software queue.
+// 0 = in a mailbox, 1 = TX mailboxes stayed full, 3 = the controller says the bus is faulted.
+template <typename BUS>
+static int can_send(BUS& bus, const CAN_message_t& m){
+  uint32_t base = can_base(bus);
+  if (!can_tx_mb_free(base)){
+    uint32_t t0 = micros();
+    cantx_waits++;
+    while (!can_tx_mb_free(base)){
+      if ((uint32_t)(micros() - t0) >= (uint32_t)CAN_TX_WAIT_MS * 1000UL){
+        cantx_full++;
+        // Mailboxes also stay busy when nothing ACKs us: FlexCAN then retries the frame
+        // forever and the TX error counter climbs 8 per attempt, so ~16 attempts (~4 ms) put
+        // it error-passive. Reading FLT_CONF here is what separates "we outran the wire" from
+        // "the wire is dead" -- the two used to print the same misleading message.
+        return (FLEXCANb_ESR1(base) & FLEXCAN_ESR_FLT_CONF_MASK) ? 3 : 1;
+      }
+      pump_mon();                    // keep the Head-2 logger draining while we wait
+    }
+    uint32_t w = (uint32_t)(micros() - t0);
+    if (w > cantx_maxwus) cantx_maxwus = w;
+  }
+  int r = bus.write(m);
+  if (r == 1){ cantx_frames++; return 0; }
+  if (r == -1){ cantx_frames++; cantx_queued++; return 0; }  // raced the ISR; it still goes out, in order
+  if (r == -2) return 3;             // library's own ESR1 fault check fired
+  cantx_full++;                      // 0 = mailboxes and the queue are both full -> dropped
+  return 1;
+}
+
 // Wait for a Flow Control frame on rx. 0 = CTS (fills bs/stmin), 2 = abort/timeout.
 template <typename BUS>
 static int wait_fc(BUS& bus, uint32_t rx, uint8_t& bs, uint8_t& stmin){
@@ -241,14 +335,17 @@ static int wait_fc(BUS& bus, uint32_t rx, uint8_t& bs, uint8_t& stmin){
     if (r.id != rx) continue;
     if ((r.buf[0]>>4) != 3) continue;               // not a flow-control frame
     uint8_t fs = r.buf[0]&0x0F;
-    if (fs==0){ bs=r.buf[1]; stmin=r.buf[2]; return 0; }  // CTS
+    if (fs==0){ bs=r.buf[1]; stmin=r.buf[2];
+                cantx_fc_bs=bs; cantx_fc_st=stmin;             // surfaced by STATS
+                return 0; }                                    // CTS
     if (fs==1){ dl=millis()+UDS_TIMEOUT_MS; continue; }   // WAIT -> keep waiting
     return 2;                                              // OVFLW / abort
   }
   return 2;                                                // timeout
 }
 
-// Send a UDS request of any length as ISO-TP.  0=ok, 1=tx-fail, 2=no-flow-control.
+// Send a UDS request of any length as ISO-TP.
+// 0=ok, 1=TX mailboxes stayed full, 2=no-flow-control, 3=bus faulted (error-passive/bus-off).
 template <typename BUS>
 static int isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, uint16_t len){
   CAN_message_t m; m.id=tx; m.flags.extended=0; m.len=8;
@@ -257,13 +354,13 @@ static int isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, ui
   if (len<=7){                                      // Single Frame
     m.buf[0]=len & 0x0F;
     for (uint16_t i=0;i<len;i++) m.buf[1+i]=req[i];
-    return bus.write(m) ? 0 : 1;
+    return can_send(bus, m);
   }
 
   m.buf[0]=0x10 | ((len>>8)&0x0F);                  // First Frame
   m.buf[1]=len & 0xFF;
   for (int i=0;i<6;i++) m.buf[2+i]=req[i];
-  if (!bus.write(m)) return 1;
+  { int w = can_send(bus, m); if (w) return w; }
   uint16_t sent=6;
 
   uint8_t bs=0, stmin=0;
@@ -274,7 +371,7 @@ static int isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, ui
     for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
     m.buf[0]=0x20 | (sn & 0x0F);
     for (int i=0;i<7 && sent<len;i++) m.buf[1+i]=req[sent++];
-    if (!bus.write(m)) return 1;
+    { int w = can_send(bus, m); if (w) return w; }
     sn=(sn+1)&0x0F; inblock++;
     if (sent<len){
       stmin_delay(stmin);
@@ -314,7 +411,7 @@ static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_
       CAN_message_t fc; fc.id=tx; fc.flags.extended=0; fc.len=8;
       for (int i=0;i<8;i++) fc.buf[i]=PAD_BYTE;
       fc.buf[0]=0x30; fc.buf[1]=0x00; fc.buf[2]=0x00;  // CTS, BS=0, STmin=0
-      bus.write(fc);
+      can_send(bus, fc);
       dl=millis()+UDS_TIMEOUT_MS;
     }
     else if (pci==2){                               // Consecutive Frame
@@ -330,8 +427,9 @@ static int isotp_recv(BUS& bus, uint32_t tx, uint32_t rx, uint8_t* resp, uint16_
 template <typename BUS>
 static void do_uds(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, uint16_t reqlen){
   int s = isotp_send(bus, tx, rx, req, reqlen);
-  if (s==1){ Serial.println("ERR:tx-fail (frame never ACKed on the wire — bus down / wrong head)"); return; }
+  if (s==1){ Serial.println("ERR:tx-fail (TX mailboxes stayed full - we outran the wire; the bus is OK)"); return; }
   if (s==2){ Serial.println("ERR:no-flow-control (module never sent CTS to our First Frame)"); return; }
+  if (s==3){ Serial.println("ERR:bus-fault (controller error-passive/bus-off - nothing is ACKing: bus down / wrong head / term 15 off)"); return; }
 
   static uint8_t resp[4096];
   bool sawAny=false; uint16_t got=0, total=0;
@@ -349,7 +447,8 @@ static void do_raw(BUS& bus, uint32_t id, const uint8_t* data, int n){
   CAN_message_t m; m.id=id; m.flags.extended=0; m.len=8;
   for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
   for (int i=0;i<n && i<8;i++) m.buf[i]=data[i];
-  Serial.println(bus.write(m) ? "OK:sent" : "ERR:tx-fail");
+  int w = can_send(bus, m);
+  Serial.println(w==0 ? "OK:sent" : (w==3 ? "ERR:bus-fault (nothing ACKed it)" : "ERR:tx-fail (no free TX mailbox)"));
 }
 
 // Send ONE classic CAN frame in NORMAL (TX) mode, then capture RX frames for waitms ms.
@@ -361,7 +460,8 @@ template <typename BUS>
 static void do_canx(BUS& bus, uint32_t id, const uint8_t* data, int n, uint32_t waitms){
   CAN_message_t m; m.id=id; m.flags.extended=0; m.len=(n>8)?8:n;
   for (int i=0;i<m.len;i++) m.buf[i]=data[i];
-  if (!bus.write(m)){ Serial.println("ERR:tx-fail"); return; }
+  { int w = can_send(bus, m);
+    if (w){ Serial.println(w==3 ? "ERR:bus-fault (nothing ACKed it)" : "ERR:tx-fail (no free TX mailbox)"); return; } }
   if (waitms==0){ Serial.println("OK:sent"); return; }
   uint32_t start=millis(), cnt=0;
   while ((int32_t)((start+waitms)-millis())>0){
@@ -438,7 +538,7 @@ static void tp_service(){
   CAN_message_t m; m.id = tp_tx; m.flags.extended = 0; m.len = 8;
   for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
   m.buf[0]=0x02; m.buf[1]=0x3E; m.buf[2]=0x80;       // TesterPresent, suppress positive
-  if (tp_bus==1) Head1.write(m); else if (tp_bus==2) Head2.write(m);
+  if (tp_bus==1) can_send(Head1, m); else if (tp_bus==2) can_send(Head2, m);
   tp_last = millis();
 }
 
@@ -451,7 +551,7 @@ static void do_scan(BUS& bus, uint32_t lo, uint32_t hi, uint32_t winms){
     CAN_message_t m; m.id = tx; m.flags.extended = 0; m.len = 8;
     for (int i=0;i<8;i++) m.buf[i]=PAD_BYTE;
     m.buf[0]=0x02; m.buf[1]=0x3E; m.buf[2]=0x00;       // single-frame TesterPresent
-    bus.write(m);
+    can_send(bus, m);
     uint32_t dl = millis() + winms;                     // reply window (routed modules are slow)
     while ((int32_t)(dl-millis())>0){
       CAN_message_t r;
@@ -533,7 +633,7 @@ static int emu_recv(uint8_t* out, int maxlen){
     CAN_message_t fc; fc.id=emu_resp; fc.flags.extended=0; fc.len=8;
     for (int i=0;i<8;i++) fc.buf[i]=PAD_BYTE;
     fc.buf[0]=0x30; fc.buf[1]=0; fc.buf[2]=0;         // CTS, BS=0, STmin=0
-    Head1.write(fc);
+    can_send(Head1, fc);
     uint32_t dl=millis()+1000;
     while (got<total && (int32_t)(dl-millis())>0){
       pump_mon();                                     // keep the Head-2 logger draining
@@ -670,7 +770,7 @@ static bool     tp20_busy = false;     // suppress the background keepalive mid-
 static bool tp20_w(uint16_t id, const uint8_t* d, int n){
   CAN_message_t m; m.id = id; m.flags.extended = 0; m.len = n;
   for (int i = 0; i < n; i++) m.buf[i] = d[i];
-  return (tp20_bus == 2) ? Head2.write(m) : Head1.write(m);
+  return (tp20_bus == 2) ? (can_send(Head2, m) == 0) : (can_send(Head1, m) == 0);
 }
 static bool tp20_r(CAN_message_t& r){
   return (tp20_bus == 2) ? Head2.read(r) : Head1.read(r);
@@ -1058,7 +1158,20 @@ void handleLine(String line){
     Serial.print(" crc="); Serial.print(e.CRC_ERR);
     Serial.print(" frm="); Serial.print(e.FRM_ERR);
     Serial.print(" stf="); Serial.print(e.STF_ERR);
-    Serial.print(" esr1=0x"); Serial.println(e.ESR1, HEX);
+    Serial.print(" esr1=0x"); Serial.print(e.ESR1, HEX);
+    // ISO-TP TX accounting. txwaits / txmaxwait_us show how close a long download ran to the
+    // 500 kbps ceiling; txfull is the ONLY thing that can produce ERR:tx-fail now, and txraced
+    // / txqueued should read 0 (anything else means frames are reaching FlexCAN_T4's software
+    // queue, which the gate exists to avoid). fc_stmin is what the module last asked for -- 0 means
+    // "send the Consecutive Frames back-to-back", which is the case that used to overflow.
+    Serial.print(" txframes="); Serial.print(cantx_frames);
+    Serial.print(" txwaits="); Serial.print(cantx_waits);
+    Serial.print(" txmaxwait_us="); Serial.print(cantx_maxwus);
+    Serial.print(" txfull="); Serial.print(cantx_full);
+    Serial.print(" txraced="); Serial.print(cantx_queued);
+    Serial.print(" txqueued="); Serial.print(bus==1 ? Head1.getTXQueueCount() : Head2.getTXQueueCount());
+    Serial.print(" fc_bs="); Serial.print(cantx_fc_bs);
+    Serial.print(" fc_stmin="); Serial.println(cantx_fc_st);
     return;
   }
   if (kw=="EMU"){

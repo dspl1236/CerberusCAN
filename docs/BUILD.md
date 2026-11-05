@@ -113,6 +113,8 @@ issue commands on Head 1 or a tester (ODIS / VCDS) runs. A module *answering* is
 | `INFO`/`PING` work, but every module times out | Physical bus path. In order: **3.3 V** at each board VCC → **OBD 4 grounded** to common → CANH/CANL continuity to OBD 6/14 → then **swap CTX/CRX** (the #1 cause). |
 | Modules time out right after bench testing | Bench TX with no bus pushes the controllers to bus-off — **replug the Teensy** for a clean boot (it self-recovers on a live bus anyway). |
 | `ERR:no-flow-control` on a write | The target ECU never sent CTS — wrong ID, or wrong session. |
+| `ERR:tx-fail` on a long write | Our own TX mailboxes stayed full for `CAN_TX_WAIT_MS` — the bus is fine, we could not feed it. Expected only if a head is in `LISTEN_ONLY`; otherwise check `STATS:<bus>` for `txfull` / `txqueued`. |
+| `ERR:bus-fault` | The controller went error-passive or bus-off: nothing is ACKing. Bus down, wrong head, or terminal 15 off. |
 
 ## 7. Validated
 
