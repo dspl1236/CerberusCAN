@@ -22,6 +22,9 @@
  *   EMU:add:PREFIX:RESP            add a rule (request-prefix -> response); EMU:clear|off|stat
  *   STATS:<bus>                    CAN controller health: error counters / fault state / RX overrun
  *   TP:<bus>:<TXID>:<ms>          background TesterPresent keep-alive (non-blocking) | TP:STOP to end
+ *   ISOTP:ORDER:<0|1>              strict single-mailbox TX ordering (default 1 — see the CAN TX gate)
+ *   ISOTP:CFGAP:<us>               floor on the gap between Consecutive Frames, overriding a too-low
+ *                                  STmin (0 = obey the module). ISOTP alone prints both.
  *   INFO                           firmware + bus config
  *   PING                           -> PONG
  *   SLCAN                          enter Lawicel SLCAN mode on Head 1 (SavvyCAN / slcand / python-can);
@@ -261,11 +264,39 @@ static inline void stmin_delay(uint8_t st){
 // write() does not). An ISR landing between our scan and our store would overwrite a frame the
 // ISR had just armed -- a silently dropped and reordered CF in the middle of a flash download.
 // Keeping the queue empty means only the main loop ever arms a mailbox, so that race cannot
-// happen; the pipeline depth costs nothing because throughput is wire-limited either way.
+// happen.
 //
 // And do NOT reach for bus.events() to drain the queue by hand: its frame.mb == -1 path writes
 // the SAME peeked frame into EVERY free mailbox while popping one entry per mailbox, so it
 // duplicates frames on the wire and drops the rest.
+//
+// ---- ORDER, which is the second half of the same story (fw 0.9.27) ----
+// With the drops fixed, the gateway bootloader still answered nothing to any message longer
+// than 9 CAN frames, with a sharp cutoff: 8 and 9 frames passed, 10 and up got no reply at all,
+// and STATS said txfull=0 txraced=0 and the bus Error Active. Nothing was being lost -- so the
+// frames were arriving in the wrong ORDER, and the receiver discarded the sequence.
+//
+// That is a direct consequence of spreading frames across mailboxes, and the cutoff is where
+// the arithmetic says it must be. There are 8 TX mailboxes here (MB8..MB15, with MAXMB 16 and
+// the FIFO + its filter table taking MB0..MB7). The First Frame goes out alone and we then
+// block in wait_fc for the module's Flow Control, which takes milliseconds -- so by the time
+// the Consecutive Frames start, all 8 mailboxes are free again. Eight CFs therefore fit with no
+// refill, and a 9-frame message (FF + 8 CFs = 54 data bytes) is the largest that does.
+//
+// The 9th CF is the first frame that has to WAIT. MB8 finishes first, write() scans upward from
+// the offset and picks MB8 again -- so MB8 now holds a NEWER frame than MB9..MB15. Every CF
+// carries the same id, so FlexCAN's arbitration cannot separate them by priority and falls back
+// on mailbox number: the newest frame wins and overtakes up to seven older ones, the sequence
+// numbers arrive scrambled, and the receiver discards the message. Measured: 8 and 9 frames
+// pass, 10 and up fail, with nothing lost and no bus errors. The boundary is the mailbox count,
+// not a timing threshold, which is what rules out "the bootloader is too slow".
+//
+// So ISO-TP frames go out through ONE mailbox, re-armed only after the previous frame has left
+// the wire (hardware clears the code to TX_INACTIVE on success). One frame in flight means
+// arbitration has nothing to choose between and order is guaranteed by construction, not by
+// timing. It costs nothing: the wire was always the limit, and re-arming is a few microseconds
+// against a frame's ~230 us. ISOTP:ORDER:0 restores the old multi-mailbox behaviour, which is
+// what separates "wrong order" from "receiver too slow" without a reflash.
 static inline uint32_t can_base(Head1_t&){ return (uint32_t)CAN1; }
 static inline uint32_t can_base(Head2_t&){ return (uint32_t)CAN2; }
 
@@ -285,6 +316,21 @@ static inline bool can_tx_mb_free(uint32_t base){
   return false;
 }
 
+// The single mailbox used when strict ordering is on: the highest one, which is always inside
+// the TX region whenever a TX region exists at all.
+static inline uint8_t can_tx_mb_one(uint32_t base){
+  uint8_t last = FLEXCANb_MAXMB_SIZE(base) - 1, first = can_tx_mb_first(base);
+  return (last >= first) ? last : first;
+}
+static inline bool can_mb_idle(uint32_t base, uint8_t mb){
+  return FLEXCAN_get_code(FLEXCANb_MBn_CS(base, mb)) == FLEXCAN_MB_CODE_TX_INACTIVE;
+}
+
+// Runtime knobs, both settable with ISOTP: so a module that misbehaves can be characterised
+// from the host instead of through a reflash.
+static bool     isotp_order = true;   // one mailbox, strictly in order
+static uint32_t isotp_cfgap = 0;      // us floor between Consecutive Frames (0 = obey STmin)
+
 // TX accounting, reported by STATS so a slow or failing send can be explained after the fact.
 static uint32_t cantx_frames = 0;    // frames that reached a mailbox
 static uint32_t cantx_waits  = 0;    // how many of those had to wait for one to free up
@@ -299,13 +345,16 @@ static uint8_t  cantx_fc_st  = 0;    // STmin likewise (0 = "send them back-to-b
 template <typename BUS>
 static int can_send(BUS& bus, const CAN_message_t& m){
   uint32_t base = can_base(bus);
-  if (!can_tx_mb_free(base)){
+  uint8_t  mb   = isotp_order ? can_tx_mb_one(base) : 0;
+  bool ready    = isotp_order ? can_mb_idle(base, mb) : can_tx_mb_free(base);
+  if (!ready){
     uint32_t t0 = micros();
     cantx_waits++;
-    while (!can_tx_mb_free(base)){
+    for (;;){
+      if (isotp_order ? can_mb_idle(base, mb) : can_tx_mb_free(base)) break;
       if ((uint32_t)(micros() - t0) >= (uint32_t)CAN_TX_WAIT_MS * 1000UL){
         cantx_full++;
-        // Mailboxes also stay busy when nothing ACKs us: FlexCAN then retries the frame
+        // A mailbox also stays busy when nothing ACKs us: FlexCAN then retries the frame
         // forever and the TX error counter climbs 8 per attempt, so ~16 attempts (~4 ms) put
         // it error-passive. Reading FLT_CONF here is what separates "we outran the wire" from
         // "the wire is dead" -- the two used to print the same misleading message.
@@ -316,12 +365,26 @@ static int can_send(BUS& bus, const CAN_message_t& m){
     uint32_t w = (uint32_t)(micros() - t0);
     if (w > cantx_maxwus) cantx_maxwus = w;
   }
-  int r = bus.write(m);
+  // write(mb, m) cannot reach the software queue here: we just read that mailbox as idle, and
+  // with ordering on it is the only one this firmware ever arms, so nothing can take it first.
+  int r = isotp_order ? bus.write((FLEXCAN_MAILBOX)mb, m) : bus.write(m);
   if (r == 1){ cantx_frames++; return 0; }
   if (r == -1){ cantx_frames++; cantx_queued++; return 0; }  // raced the ISR; it still goes out, in order
   if (r == -2) return 3;             // library's own ESR1 fault check fired
   cantx_full++;                      // 0 = mailboxes and the queue are both full -> dropped
   return 1;
+}
+
+// Gap between Consecutive Frames: whatever the module asked for, but never below the ISOTP
+// CFGAP floor. A module may legitimately ask for STmin 0 and still not keep up with frames
+// arriving every ~230 us; the floor is how that is proven, and worked around, from the host.
+static inline void cf_delay(uint8_t st){
+  if (!isotp_cfgap){ stmin_delay(st); return; }
+  uint32_t us = isotp_cfgap, mod = 0;
+  if (st >= 0x01 && st <= 0x7F)      mod = (uint32_t)st * 1000UL;        // 1..127 ms
+  else if (st >= 0xF1 && st <= 0xF9) mod = (uint32_t)(st - 0xF0) * 100UL; // 100..900 us
+  if (mod > us) us = mod;
+  delayMicroseconds(us);
 }
 
 // Wait for a Flow Control frame on rx. 0 = CTS (fills bs/stmin), 2 = abort/timeout.
@@ -374,7 +437,7 @@ static int isotp_send(BUS& bus, uint32_t tx, uint32_t rx, const uint8_t* req, ui
     { int w = can_send(bus, m); if (w) return w; }
     sn=(sn+1)&0x0F; inblock++;
     if (sent<len){
-      stmin_delay(stmin);
+      cf_delay(stmin);
       if (bs!=0 && inblock>=bs){                     // block full -> next FC
         inblock=0;
         if (wait_fc(bus, rx, bs, stmin)!=0) return 2;
@@ -723,7 +786,7 @@ static void handleSLCAN(const String& s){
     int dlc=nib(s[4]); if(dlc>8)dlc=8;
     CAN_message_t m; m.id=id; m.flags.extended=0; m.len=dlc;
     for (int i=0;i<dlc;i++){ int p=5+i*2; if(p+1>=(int)s.length()){Serial.print('\a');return;} m.buf[i]=(nib(s[p])<<4)|nib(s[p+1]); }
-    Serial.print((slcan_open && Head1.write(m)) ? "z\r" : "\a"); return;
+    Serial.print((slcan_open && can_send(Head1, m)==0) ? "z\r" : "\a"); return;
   }
   if (cmd=='T'){                                                          // TIIIIIIIILDD..
     if (s.length()<10){ Serial.print('\a'); return; }
@@ -731,7 +794,7 @@ static void handleSLCAN(const String& s){
     int dlc=nib(s[9]); if(dlc>8)dlc=8;
     CAN_message_t m; m.id=id; m.flags.extended=1; m.len=dlc;
     for (int i=0;i<dlc;i++){ int p=10+i*2; if(p+1>=(int)s.length()){Serial.print('\a');return;} m.buf[i]=(nib(s[p])<<4)|nib(s[p+1]); }
-    Serial.print((slcan_open && Head1.write(m)) ? "Z\r" : "\a"); return;
+    Serial.print((slcan_open && can_send(Head1, m)==0) ? "Z\r" : "\a"); return;
   }
   if (cmd=='r'||cmd=='R'){ Serial.print('\r'); return; }                  // RTR tx: accept (VAG rarely needs it)
   Serial.print('\a');                                                     // unknown SLCAN cmd
@@ -1171,7 +1234,9 @@ void handleLine(String line){
     Serial.print(" txraced="); Serial.print(cantx_queued);
     Serial.print(" txqueued="); Serial.print(bus==1 ? Head1.getTXQueueCount() : Head2.getTXQueueCount());
     Serial.print(" fc_bs="); Serial.print(cantx_fc_bs);
-    Serial.print(" fc_stmin="); Serial.println(cantx_fc_st);
+    Serial.print(" fc_stmin="); Serial.print(cantx_fc_st);
+    Serial.print(" order="); Serial.print(isotp_order?1:0);
+    Serial.print(" cfgap="); Serial.println(isotp_cfgap);
     return;
   }
   if (kw=="EMU"){
@@ -1343,7 +1408,7 @@ void handleLine(String line){
     Head2.setBaudRate(bus2_baud);              Head2.enableFIFO();   // Head 2 active TX
     uint32_t seen=0, sent=0;
     for (int i=0;i<20;i++){
-      if (Head2.write(m)) sent++;
+      if (can_send(Head2, m)==0) sent++;   // only a real mailbox hand-off counts as sent
       uint32_t t=millis();
       while (millis()-t < 15){ CAN_message_t r; if (Head1.read(r) && r.id==0x100) seen++; }
     }
@@ -1444,6 +1509,22 @@ void handleLine(String line){
     Serial.print("OK:tp-on bus="); Serial.print(tp_bus);
     Serial.print(" tx="); Serial.print(tp_tx,HEX);
     Serial.print(" ms="); Serial.println(tp_ms);
+    return;
+  }
+  if (kw=="ISOTP"){
+    // ISOTP:ORDER:<0|1> | ISOTP:CFGAP:<us> | ISOTP (print)
+    if (np>=3 && parts[1].equalsIgnoreCase("ORDER")){
+      isotp_order = (parts[2].toInt() != 0);
+    } else if (np>=3 && parts[1].equalsIgnoreCase("CFGAP")){
+      long us = parts[2].toInt();
+      if (us < 0) us = 0;
+      if (us > 50000) us = 50000;    // delayMicroseconds loses accuracy well before this
+      isotp_cfgap = (uint32_t)us;
+    } else if (np>=2 && !parts[1].equalsIgnoreCase("STAT")){
+      Serial.println("ERR:format (ISOTP:ORDER:<0|1> | ISOTP:CFGAP:<us> | ISOTP)"); return;
+    }
+    Serial.print("OK:isotp order="); Serial.print(isotp_order?1:0);
+    Serial.print(" cfgap="); Serial.println(isotp_cfgap);
     return;
   }
   if (kw=="SCAN"){

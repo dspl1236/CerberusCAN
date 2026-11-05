@@ -115,6 +115,8 @@ issue commands on Head 1 or a tester (ODIS / VCDS) runs. A module *answering* is
 | `ERR:no-flow-control` on a write | The target ECU never sent CTS — wrong ID, or wrong session. |
 | `ERR:tx-fail` on a long write | Our own TX mailboxes stayed full for `CAN_TX_WAIT_MS` — the bus is fine, we could not feed it. Expected only if a head is in `LISTEN_ONLY`; otherwise check `STATS:<bus>` for `txfull` / `txqueued`. |
 | `ERR:bus-fault` | The controller went error-passive or bus-off: nothing is ACKing. Bus down, wrong head, or terminal 15 off. |
+| A long write gets `ERR:no-response` but short ones work | Frame ORDER. Fixed in fw 0.9.27: ISO-TP frames go out through one mailbox, strictly in order, because same-id frames in several mailboxes are arbitrated by mailbox number and a refill overtakes older frames. `ISOTP:ORDER:0` restores the old behaviour for comparison. |
+| A module asks for `STmin 0` but still cannot keep up | `ISOTP:CFGAP:<us>` sets a floor on the Consecutive-Frame gap. `STATS:<bus>` reports `fc_stmin` so you can see what it asked for. |
 
 ## 7. Validated
 
